@@ -32,3 +32,11 @@ run = "cargo build"
 [tasks."build:release"]
 description = "Build release binary"
 run = "cargo build --release"
+
+[tasks."install"]
+description = "Install gw locally for development"
+run = "cargo install --path ."
+
+[tasks."dev"]
+description = "Build and install gw for development workflow"
+depends = ["build:release", "install"]

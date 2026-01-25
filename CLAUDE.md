@@ -18,6 +18,31 @@ This project uses [mise](https://mise.jdx.dev/) for task running. Tasks are defi
 | `mise run test` | Run tests |
 | `mise run build` | Build debug binary |
 | `mise run build:release` | Build release binary |
+| `mise run install` | Install gw locally |
+| `mise run dev` | Build release and install |
+
+### Development Workflow
+
+This project uses `gw` (itself) for git workflow. Use the `/git-workflow` skill:
+
+```bash
+/git-workflow new feature/my-feature   # Start new feature branch
+/git-workflow pr "Add feature X"       # Create PR
+/git-workflow cleanup                  # Clean up after merge
+/git-workflow status                   # Check current state
+```
+
+Or use `gw` commands directly:
+
+```bash
+gw new feature/my-feature    # Create branch from origin/main
+gw status                    # Show state and next action
+gw pause "WIP message"       # Save work and go home
+gw cleanup                   # Delete merged branch
+gw home                      # Return to home branch
+gw sync                      # Rebase after base PR merged
+gw undo                      # Undo last commit
+```
 
 ### Before Committing
 
