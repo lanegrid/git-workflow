@@ -2,7 +2,7 @@
 name: release
 description: Release a new version of git-workflow
 argument-hint: <version>
-allowed-tools: Bash(cargo*), Bash(git*), Bash(gh*), Read, Edit, Grep
+allowed-tools: Bash(mise*), Bash(cargo*), Bash(git*), Bash(gh*), Read, Edit, Grep
 ---
 
 # git-workflow Release
@@ -31,11 +31,9 @@ Commits since last release:
 
 3. **Quality Checks**
    ```bash
-   cargo fmt --check
-   cargo clippy --all-targets -- -D warnings
-   cargo test
-   cargo build --release
+   mise run verify
    ```
+   This runs fmt, lint, test, and build.
 
 4. **Commit**
    - Message: `chore: release vX.X.X`

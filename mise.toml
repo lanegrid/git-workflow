@@ -1,0 +1,34 @@
+[tools]
+rust = "1.85"
+
+[tasks.verify]
+description = "Run all checks (fmt, lint, test, build)"
+depends = ["fmt", "lint", "test", "build"]
+
+[tasks.fmt]
+description = "Check code formatting"
+run = "cargo fmt --all -- --check"
+
+[tasks."fmt:fix"]
+description = "Fix code formatting"
+run = "cargo fmt --all"
+
+[tasks.lint]
+description = "Run clippy lints"
+run = "cargo clippy --all-targets --all-features -- -D warnings"
+
+[tasks."lint:fix"]
+description = "Fix clippy lints where possible"
+run = "cargo clippy --all-targets --all-features --fix --allow-dirty --allow-staged -- -D warnings"
+
+[tasks.test]
+description = "Run tests"
+run = "cargo test"
+
+[tasks.build]
+description = "Build debug binary"
+run = "cargo build"
+
+[tasks."build:release"]
+description = "Build release binary"
+run = "cargo build --release"
