@@ -1,0 +1,87 @@
+//! `gw pause` command - Pause current work by creating a WIP commit and returning to home
+
+use crate::error::{GwError, Result};
+use crate::git;
+use crate::github;
+use crate::output;
+use crate::state::{RepoType, WorkingDirState};
+
+/// Execute the `pause` command
+pub fn run(message: Option<String>, verbose: bool) -> Result<()> {
+    // Ensure we're in a git repo
+    if !git::is_git_repo() {
+        return Err(GwError::NotAGitRepository);
+    }
+
+    let repo_type = RepoType::detect()?;
+    let home_branch = repo_type.home_branch();
+    let current = git::current_branch()?;
+    let working_dir = WorkingDirState::detect();
+
+    println!();
+
+    // If on home branch, just inform
+    if current == home_branch {
+        output::info(&format!("Already on home branch '{}'", home_branch));
+        if !working_dir.is_clean() {
+            output::warn(
+                "You have uncommitted changes. Consider committing or using 'gw new <branch>'.",
+            );
+        }
+        return Ok(());
+    }
+
+    // Create WIP commit if there are changes
+    if !working_dir.is_clean() {
+        let commit_message = match &message {
+            Some(msg) => format!("WIP: {}", msg),
+            None => "WIP: paused".to_string(),
+        };
+
+        output::info("Creating WIP commit...");
+        git::add_all(verbose)?;
+        git::commit(&commit_message, verbose)?;
+        output::success(&format!("Created: {}", commit_message));
+
+        // Try to add PR comment if message provided
+        if let Some(msg) = &message {
+            if github::is_gh_available() {
+                if let Ok(Some(pr)) = github::get_pr_for_branch(&current) {
+                    let comment = format!("⏸️ Paused work on this PR: {}", msg);
+                    match github::add_pr_comment(pr.number, &comment) {
+                        Ok(()) => output::success(&format!("Added comment to PR #{}", pr.number)),
+                        Err(e) => output::warn(&format!("Could not add PR comment: {}", e)),
+                    }
+                }
+            }
+        }
+    } else {
+        output::info("Working directory is clean. No WIP commit needed.");
+    }
+
+    // Switch to home branch
+    output::info("Switching to home branch...");
+    git::fetch_prune(verbose)?;
+
+    if !git::branch_exists(home_branch) {
+        git::checkout_new_branch(home_branch, "origin/main", verbose)?;
+    } else {
+        git::checkout(home_branch, verbose)?;
+    }
+
+    // Sync with origin/main
+    git::pull("origin", "main", verbose)?;
+    output::success(&format!(
+        "Switched to {} and synced",
+        output::bold(home_branch)
+    ));
+
+    output::ready("Paused", home_branch);
+    output::hints(&[
+        &format!("git checkout {}  # Return to paused branch", current),
+        "gw undo              # Undo WIP commit after checkout",
+        "gw new <branch>      # Start different work",
+    ]);
+
+    Ok(())
+}

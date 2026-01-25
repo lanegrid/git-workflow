@@ -1,0 +1,29 @@
+[package]
+name = "git-workflow"
+version = "0.1.0"
+edition = "2024"
+authors = ["zawakin"]
+description = "Git workflow CLI - type-safe worktree-aware git operations with GitHub integration"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/zawakin/git-workflow"
+homepage = "https://github.com/zawakin/git-workflow"
+documentation = "https://docs.rs/git-workflow"
+readme = "README.md"
+keywords = ["git", "workflow", "cli", "worktree", "github"]
+categories = ["command-line-utilities", "development-tools"]
+rust-version = "1.85"
+
+[[bin]]
+name = "gw"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+thiserror = "1.0"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
