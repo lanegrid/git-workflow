@@ -2,6 +2,15 @@
 
 A type-safe Git workflow CLI with worktree support and GitHub integration.
 
+## Important: Always Create PRs
+
+When making changes to this repository:
+
+1. **Create a feature branch** before making changes: `/git-workflow new <branch-name>`
+2. **Run verification** before committing: `mise run verify`
+3. **Create a PR** for any changes: `/git-workflow pr "<description>"`
+4. **Never push directly to main** - always go through PR workflow
+
 ## Development
 
 This project uses [mise](https://mise.jdx.dev/) for task running. Tasks are defined in `mise.toml`.
