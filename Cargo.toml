@@ -1,6 +1,6 @@
 [package]
 name = "git-workflow"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 authors = ["zawakin"]
 description = "Git workflow CLI - type-safe worktree-aware git operations with GitHub integration"
