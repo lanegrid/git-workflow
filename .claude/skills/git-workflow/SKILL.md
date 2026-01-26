@@ -89,3 +89,13 @@ mise run verify
 - Always use `gw` commands for branch operations
 - Run `mise run verify` before pushing
 - Use conventional commit messages (feat:, fix:, chore:, etc.)
+
+## After Cleanup (Dogfooding)
+
+After merging a PR, reinstall gw to use the latest version:
+
+```bash
+mise run dev  # Build and install gw
+```
+
+**Note:** Only run `mise run dev` from the main worktree to avoid overwriting with an in-progress version from another worktree.
