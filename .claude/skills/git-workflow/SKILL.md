@@ -95,7 +95,7 @@ mise run verify
 After merging a PR, reinstall gw to use the latest version:
 
 ```bash
-mise run dev  # Build and install gw
+mise run install  # Build and install gw
 ```
 
-**Note:** Only run `mise run dev` from the main worktree to avoid overwriting with an in-progress version from another worktree.
+**Note:** Only run `mise run install` from the main worktree to avoid overwriting with an in-progress version from another worktree.
