@@ -7,6 +7,7 @@ A type-safe Git workflow CLI with worktree support and GitHub integration.
 
 ## Features
 
+- **Always up-to-date** - Automatically fetches from origin, so you never branch from a stale main
 - **Type-safe branch protection** - Prevents accidental deletion of protected branches (main, master, home)
 - **Git worktree aware** - Automatically detects and works with git worktrees
 - **GitHub integration** - Fetches PR information to make informed decisions about branch operations
@@ -24,7 +25,7 @@ cargo install git-workflow
 ### From source
 
 ```bash
-git clone https://github.com/zawakin/git-workflow.git
+git clone https://github.com/lanegrid/git-workflow.git
 cd git-workflow
 cargo install --path .
 ```
