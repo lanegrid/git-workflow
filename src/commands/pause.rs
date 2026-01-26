@@ -63,14 +63,18 @@ pub fn run(message: Option<String>, verbose: bool) -> Result<()> {
     output::info("Switching to home branch...");
     git::fetch_prune(verbose)?;
 
+    // Detect default remote branch
+    let default_remote = git::get_default_remote_branch()?;
+    let default_branch = default_remote.strip_prefix("origin/").unwrap_or("main");
+
     if !git::branch_exists(home_branch) {
-        git::checkout_new_branch(home_branch, "origin/main", verbose)?;
+        git::checkout_new_branch(home_branch, &default_remote, verbose)?;
     } else {
         git::checkout(home_branch, verbose)?;
     }
 
-    // Sync with origin/main
-    git::pull("origin", "main", verbose)?;
+    // Sync with default remote
+    git::pull("origin", default_branch, verbose)?;
     output::success(&format!(
         "Switched to {} and synced",
         output::bold(home_branch)

@@ -12,6 +12,13 @@ pub fn run(verbose: bool) -> Result<()> {
         return Err(GwError::NotAGitRepository);
     }
 
+    // Check for detached HEAD
+    if git::is_detached_head() {
+        return Err(GwError::Other(
+            "Cannot run from detached HEAD. Checkout a branch first.".to_string(),
+        ));
+    }
+
     let repo_type = RepoType::detect()?;
     let home_branch = repo_type.home_branch();
     let current = git::current_branch()?;
@@ -26,13 +33,17 @@ pub fn run(verbose: bool) -> Result<()> {
     let has_untracked = git::has_untracked_files();
     let sync_state = SyncState::detect(&current).unwrap_or(SyncState::NoUpstream);
 
+    // Detect default remote branch
+    let default_remote = git::get_default_remote_branch()?;
+    let default_branch = default_remote.strip_prefix("origin/").unwrap_or("main");
+
     // Already on home branch with clean working directory and no untracked files
     if !has_changes && !has_untracked && current == home_branch {
         output::success("Already on home branch with clean working directory");
-        // Still sync with origin/main
-        output::info("Syncing with origin/main...");
+        // Still sync with default remote
+        output::info(&format!("Syncing with {}...", default_remote));
         git::fetch_prune(verbose)?;
-        git::pull("origin", "main", verbose)?;
+        git::pull("origin", default_branch, verbose)?;
         output::success("Synced");
         return Ok(());
     }
@@ -66,18 +77,18 @@ pub fn run(verbose: bool) -> Result<()> {
     // Switch to home branch if not already there
     if current != home_branch {
         if !git::branch_exists(home_branch) {
-            output::info("Creating home branch from origin/main...");
-            git::checkout_new_branch(home_branch, "origin/main", verbose)?;
+            output::info(&format!("Creating home branch from {}...", default_remote));
+            git::checkout_new_branch(home_branch, &default_remote, verbose)?;
         } else {
             git::checkout(home_branch, verbose)?;
         }
         output::success(&format!("Switched to {}", output::bold(home_branch)));
     }
 
-    // Sync with origin/main
-    output::info("Syncing with origin/main...");
+    // Sync with default remote
+    output::info(&format!("Syncing with {}...", default_remote));
     git::fetch_prune(verbose)?;
-    git::pull("origin", "main", verbose)?;
+    git::pull("origin", default_branch, verbose)?;
     output::success("Synced");
 
     output::ready("Ready", home_branch);
