@@ -2,8 +2,12 @@
 rust = "1.85"
 
 [tasks.verify]
-description = "Run all checks (fmt, lint, test, build)"
-depends = ["fmt", "lint", "test", "build"]
+description = "Run all checks (fmt, check, lint, test, build)"
+depends = ["fmt", "check", "lint", "test", "build"]
+
+[tasks.check]
+description = "Run cargo check"
+run = "cargo check --all-targets --all-features"
 
 [tasks.fmt]
 description = "Check code formatting"
