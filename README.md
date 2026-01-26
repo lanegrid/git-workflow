@@ -1,5 +1,8 @@
 # git-workflow
 
+[![Crates.io](https://img.shields.io/crates/v/git-workflow.svg)](https://crates.io/crates/git-workflow)
+[![License](https://img.shields.io/crates/l/git-workflow.svg)](https://github.com/lanegrid/git-workflow#license)
+
 A type-safe Git workflow CLI with worktree support and GitHub integration.
 
 ## Features
