@@ -7,11 +7,11 @@ depends = ["fmt", "check", "lint", "test", "build"]
 
 [tasks.check]
 description = "Run cargo check"
-run = "cargo check --all-targets --all-features"
+run = "cargo check --all-targets --all-features --quiet"
 
 [tasks.fmt]
 description = "Check code formatting"
-run = "cargo fmt --all -- --check"
+run = "cargo fmt --all --check --quiet"
 
 [tasks."fmt:fix"]
 description = "Fix code formatting"
@@ -19,27 +19,27 @@ run = "cargo fmt --all"
 
 [tasks.lint]
 description = "Run clippy lints"
-run = "cargo clippy --all-targets --all-features -- -D warnings"
+run = "cargo clippy --all-targets --all-features --quiet -- -D warnings"
 
 [tasks."lint:fix"]
 description = "Fix clippy lints where possible"
-run = "cargo clippy --all-targets --all-features --fix --allow-dirty --allow-staged -- -D warnings"
+run = "cargo clippy --all-targets --all-features --fix --allow-dirty --allow-staged --quiet -- -D warnings"
 
 [tasks.test]
 description = "Run tests"
-run = "cargo test"
+run = "cargo test --quiet"
 
 [tasks.build]
 description = "Build debug binary"
-run = "cargo build"
+run = "cargo build --quiet"
 
 [tasks."build:release"]
 description = "Build release binary"
-run = "cargo build --release"
+run = "cargo build --release --quiet"
 
 [tasks."install"]
 description = "Build and install gw locally (for dogfooding)"
-run = "cargo install --path ."
+run = "cargo install --path . --quiet"
 depends = ["build:release"]
 
 [tasks."cleanup"]
@@ -48,7 +48,7 @@ run = """
 gw cleanup
 if [ "$(git rev-parse --git-dir)" = "$(git rev-parse --git-common-dir)" ]; then
   echo "Main worktree detected, reinstalling gw..."
-  cargo install --path .
+  cargo install --path . --quiet
 else
   echo "Worktree detected, skipping install (run from main worktree)"
 fi
