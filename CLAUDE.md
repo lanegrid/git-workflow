@@ -28,6 +28,7 @@ This project uses [mise](https://mise.jdx.dev/) for task running. Tasks are defi
 | `mise run build` | Build debug binary |
 | `mise run build:release` | Build release binary |
 | `mise run install` | Build and install gw locally (for dogfooding) |
+| `mise run cleanup` | Cleanup merged branch + reinstall (main worktree only) |
 
 ### Development Workflow
 
