@@ -44,6 +44,16 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+  lockfile:
+    name: Cargo.lock
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check Cargo.lock is up to date
+        run: |
+          cargo check --locked
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
