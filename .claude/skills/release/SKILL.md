@@ -9,18 +9,12 @@ allowed-tools: Bash(mise*), Bash(cargo*), Bash(git*), Bash(gh*), Read, Edit, Gre
 
 Release version `$ARGUMENTS`.
 
-## Current State
-
-Current version:
-!`grep '^version' Cargo.toml | head -1`
-
-Latest tag:
-!`git describe --tags --abbrev=0 2>/dev/null || echo "no tags"`
-
-Commits since last release:
-!`git log $(git describe --tags --abbrev=0 2>/dev/null || echo "HEAD~10")..HEAD --oneline 2>/dev/null || git log --oneline -10`
-
 ## Steps
+
+First, gather current state:
+- Run `grep '^version' Cargo.toml` to check current version
+- Run `git describe --tags --abbrev=0` to get latest tag
+- Run `git log <latest-tag>..HEAD --oneline` to see commits since last release
 
 1. **Validate Version**
    - Verify version format (e.g., 0.1.1)
