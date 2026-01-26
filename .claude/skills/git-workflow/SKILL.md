@@ -36,8 +36,9 @@ Parse `$ARGUMENTS` and execute the appropriate workflow:
 
 ### `cleanup [branch]` - Clean up merged branch
 
-1. Run `gw cleanup [branch]` to delete merged branch
+1. Run `mise run cleanup` to delete merged branch and reinstall gw
 2. Returns to home branch automatically
+3. Reinstalls gw if running from main worktree (for dogfooding)
 
 ### `status` - Show current state
 
@@ -90,12 +91,12 @@ mise run verify
 - Run `mise run verify` before pushing
 - Use conventional commit messages (feat:, fix:, chore:, etc.)
 
-## After Cleanup (Dogfooding)
+## Cleanup (Dogfooding)
 
-After merging a PR, reinstall gw to use the latest version:
+Use `mise run cleanup` instead of `gw cleanup` to automatically reinstall gw after cleanup:
 
 ```bash
-mise run install  # Build and install gw
+mise run cleanup  # gw cleanup + reinstall (main worktree only)
 ```
 
-**Note:** Only run `mise run install` from the main worktree to avoid overwriting with an in-progress version from another worktree.
+This automatically detects if you're in the main worktree and reinstalls gw. In a worktree, it skips the install step.

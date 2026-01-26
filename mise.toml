@@ -37,3 +37,16 @@ run = "cargo build --release"
 description = "Build and install gw locally (for dogfooding)"
 run = "cargo install --path ."
 depends = ["build:release"]
+
+[tasks."cleanup"]
+description = "Cleanup merged branch and reinstall gw (main worktree only)"
+run = """
+gw cleanup
+if [ "$(git rev-parse --git-dir)" = "$(git rev-parse --git-common-dir)" ]; then
+  echo "Main worktree detected, reinstalling gw..."
+  cargo install --path .
+else
+  echo "Worktree detected, skipping install (run from main worktree)"
+fi
+"""
+depends = ["build:release"]
