@@ -29,6 +29,31 @@ cd git-workflow
 cargo install --path .
 ```
 
+## Quick Demo
+
+```
+$ gw status
+ℹ Branch: main (home)
+→ Next: start new work
+
+$ gw new fix/typo
+✓ Created fix/typo from origin/main
+
+# ... make changes, commit ...
+
+$ gw status
+ℹ Branch: fix/typo (home: main)
+! Unpushed: 1 commit
+→ Next: push and create PR
+
+# ... push, create PR, get merged ...
+
+$ gw cleanup
+✓ PR #42 [MERGED]
+✓ Deleted fix/typo
+✓ Back to main
+```
+
 ## Usage
 
 The CLI is invoked using the `gw` command.
