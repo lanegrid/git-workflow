@@ -41,8 +41,8 @@ Switch to home branch and sync with `origin/main` (or `origin/master`).
 
 ```bash
 gw home
-# In main repo: switches to 'main'
-# In worktree 'myrepo-feature-x': switches to 'feature-x'
+# Main repo → switches to 'main'
+# Worktree → switches to home branch
 ```
 
 #### `gw new <branch>`
@@ -158,46 +158,33 @@ gw status
 
 ### How it works
 
-Each worktree has its own "home branch" based on its directory name:
+Each worktree has its own "home branch":
 
-```
-~/projects/
-├── myrepo/              # Main repo, home branch: main
-├── myrepo-feature-a/    # Worktree, home branch: feature-a
-└── myrepo-feature-b/    # Worktree, home branch: feature-b
+- **Main repo**: `main` (or `master`)
+- **Worktree**: Currently uses the directory name
+
+```bash
+# Create a worktree
+git worktree add ../feature-a feature-a
+cd ../feature-a
+gw status   # Home: feature-a
 ```
 
 ### Example: Parallel Development
 
 ```bash
-# In main repo
-cd ~/projects/myrepo
-git worktree add ../myrepo-feature-a feature-a
-git worktree add ../myrepo-feature-b feature-b
+# Work on feature-a in one worktree
+cd ~/projects/feature-a
+gw pause "WIP: need input"
 
-# Work on feature-a
-cd ~/projects/myrepo-feature-a
-gw status   # Shows: Branch: feature-a (home)
-# ... make changes ...
-gw pause "WIP: need input from team"
+# Work on feature-b in another worktree
+cd ~/projects/feature-b
+gw status   # Home: feature-b
 
-# Switch to feature-b (different terminal/directory)
-cd ~/projects/myrepo-feature-b
-gw status   # Shows: Branch: feature-b (home)
-# ... work independently ...
-
-# Back to feature-a
-cd ~/projects/myrepo-feature-a
-gw undo     # Undo WIP commit, continue working
+# Resume feature-a
+cd ~/projects/feature-a
+gw undo     # Undo WIP commit
 ```
-
-### Home Branch Detection
-
-| Context | Home Branch |
-|---------|-------------|
-| Main repository | `main` (or `master`) |
-| Worktree directory `myrepo-feature-x` | `feature-x` |
-| Worktree directory `fix-bug-123` | `fix-bug-123` |
 
 ## License
 
