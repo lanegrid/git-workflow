@@ -37,10 +37,12 @@ The CLI is invoked using the `gw` command.
 
 #### `gw home`
 
-Switch to home branch and sync with `origin/main`.
+Switch to home branch and sync with `origin/main` (or `origin/master`).
 
 ```bash
 gw home
+# In main repo: switches to 'main'
+# In worktree 'myrepo-feature-x': switches to 'feature-x'
 ```
 
 #### `gw new <branch>`
@@ -55,12 +57,17 @@ gw new fix/memory-leak
 #### `gw status`
 
 Show current repository state including:
+- Repository type (main repo or worktree)
 - Current branch and sync status
 - Working directory state
 - Suggested next action
 
 ```bash
 gw status
+# ℹ Repository: worktree (home: feature-x)
+# ✓ Branch: feature-x (home)
+# ✓ Working directory: clean
+# → Next: start new work
 ```
 
 #### `gw cleanup [branch]`
@@ -145,11 +152,52 @@ git checkout feature/user-auth
 gw status
 ```
 
-## Home Branch
+## Git Worktree Support
 
-The "home branch" is determined by:
-1. In a git worktree: the worktree directory name
-2. Otherwise: `main` (or `master` if main doesn't exist)
+`gw` is designed to work seamlessly with [git worktrees](https://git-scm.com/docs/git-worktree), enabling parallel development on multiple features.
+
+### How it works
+
+Each worktree has its own "home branch" based on its directory name:
+
+```
+~/projects/
+├── myrepo/              # Main repo, home branch: main
+├── myrepo-feature-a/    # Worktree, home branch: feature-a
+└── myrepo-feature-b/    # Worktree, home branch: feature-b
+```
+
+### Example: Parallel Development
+
+```bash
+# In main repo
+cd ~/projects/myrepo
+git worktree add ../myrepo-feature-a feature-a
+git worktree add ../myrepo-feature-b feature-b
+
+# Work on feature-a
+cd ~/projects/myrepo-feature-a
+gw status   # Shows: Branch: feature-a (home)
+# ... make changes ...
+gw pause "WIP: need input from team"
+
+# Switch to feature-b (different terminal/directory)
+cd ~/projects/myrepo-feature-b
+gw status   # Shows: Branch: feature-b (home)
+# ... work independently ...
+
+# Back to feature-a
+cd ~/projects/myrepo-feature-a
+gw undo     # Undo WIP commit, continue working
+```
+
+### Home Branch Detection
+
+| Context | Home Branch |
+|---------|-------------|
+| Main repository | `main` (or `master`) |
+| Worktree directory `myrepo-feature-x` | `feature-x` |
+| Worktree directory `fix-bug-123` | `fix-bug-123` |
 
 ## License
 
