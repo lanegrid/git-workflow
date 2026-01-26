@@ -77,10 +77,14 @@ pub fn run(branch_name: Option<String>, verbose: bool) -> Result<()> {
     git::fetch_prune(verbose)?;
     output::success("Fetched");
 
+    // Detect default remote branch
+    let default_remote = git::get_default_remote_branch()?;
+    let default_branch = default_remote.strip_prefix("origin/").unwrap_or("main");
+
     // Switch to home branch first (if on the branch to delete)
     if current == branch_to_delete {
         if !git::branch_exists(home_branch) {
-            git::checkout_new_branch(home_branch, "origin/main", verbose)?;
+            git::checkout_new_branch(home_branch, &default_remote, verbose)?;
             output::success(&format!(
                 "Created and switched to {}",
                 output::bold(home_branch)
@@ -91,9 +95,9 @@ pub fn run(branch_name: Option<String>, verbose: bool) -> Result<()> {
         }
     }
 
-    // Sync home branch with origin/main
-    output::info("Syncing with origin/main...");
-    git::pull("origin", "main", verbose)?;
+    // Sync home branch with default remote
+    output::info(&format!("Syncing with {}...", default_remote));
+    git::pull("origin", default_branch, verbose)?;
     output::success("Synced");
 
     // Delete the local branch

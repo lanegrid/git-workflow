@@ -60,10 +60,11 @@ pub fn checkout_new_branch(branch: &str, start_point: &str, verbose: bool) -> Re
 
 /// Pull from a remote branch
 pub fn pull(remote: &str, branch: &str, verbose: bool) -> Result<()> {
-    // Try normal pull first, then fallback to ff-only
-    let result = git_run(&["pull", remote, branch, "--quiet"], verbose);
+    // Try ff-only first (safer), then fallback to normal pull
+    let result = git_run(&["pull", remote, branch, "--ff-only", "--quiet"], verbose);
     if result.is_err() {
-        git_run(&["pull", remote, branch, "--ff-only", "--quiet"], verbose)?;
+        // If ff-only fails (diverged history), try normal pull
+        git_run(&["pull", remote, branch, "--quiet"], verbose)?;
     }
     Ok(())
 }

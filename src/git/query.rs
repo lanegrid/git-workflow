@@ -174,3 +174,21 @@ pub fn current_dir_name() -> Result<String> {
         .map(String::from)
         .ok_or_else(|| GwError::Other("Could not determine current directory name".to_string()))
 }
+
+/// Get the default remote branch (origin/main or origin/master)
+pub fn get_default_remote_branch() -> Result<String> {
+    if remote_branch_exists("main") {
+        Ok("origin/main".to_string())
+    } else if remote_branch_exists("master") {
+        Ok("origin/master".to_string())
+    } else {
+        Err(GwError::Other(
+            "Neither origin/main nor origin/master exists".to_string(),
+        ))
+    }
+}
+
+/// Check if HEAD is detached
+pub fn is_detached_head() -> bool {
+    current_branch().map(|b| b == "HEAD").unwrap_or(false)
+}

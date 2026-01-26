@@ -84,10 +84,20 @@ pub fn run(verbose: bool) -> Result<()> {
     output::info(&format!("PR: #{} ({})", pr.number, pr.title));
     output::info(&format!("Base: {}", pr.base_branch));
 
-    // 6. Check if base is already main
-    if pr.base_branch == "main" {
-        output::success("Base is already 'main'. Nothing to sync.");
-        output::hints(&["git rebase origin/main  # If you need to update"]);
+    // Detect default remote branch
+    let default_remote = git::get_default_remote_branch()?;
+    let default_branch = default_remote.strip_prefix("origin/").unwrap_or("main");
+
+    // 6. Check if base is already the default branch
+    if pr.base_branch == default_branch {
+        output::success(&format!(
+            "Base is already '{}'. Nothing to sync.",
+            default_branch
+        ));
+        output::hints(&[&format!(
+            "git rebase {}  # If you need to update",
+            default_remote
+        )]);
         return Ok(());
     }
 
@@ -126,13 +136,13 @@ pub fn run(verbose: bool) -> Result<()> {
     println!();
     output::info("Syncing...");
 
-    // 8. Update PR base to main
-    output::info("  Updating PR base to main...");
-    github::update_pr_base(pr.number, "main")?;
+    // 8. Update PR base to default branch
+    output::info(&format!("  Updating PR base to {}...", default_branch));
+    github::update_pr_base(pr.number, default_branch)?;
 
-    // 9. Rebase on origin/main
-    output::info("  Rebasing on origin/main...");
-    if let Err(e) = git::rebase("origin/main", verbose) {
+    // 9. Rebase on default remote
+    output::info(&format!("  Rebasing on {}...", default_remote));
+    if let Err(e) = git::rebase(&default_remote, verbose) {
         output::error("Rebase failed. You may need to resolve conflicts manually.");
         output::action("git rebase --continue  # After resolving conflicts");
         output::action("git rebase --abort     # To cancel");
@@ -146,8 +156,8 @@ pub fn run(verbose: bool) -> Result<()> {
     println!();
     output::ready("Synced", &current);
     output::hints(&[
-        &format!("PR #{} base is now 'main'", pr.number),
-        "mise run git:status  # Check status",
+        &format!("PR #{} base is now '{}'", pr.number, default_branch),
+        "gw status  # Check status",
     ]);
 
     Ok(())

@@ -36,11 +36,15 @@ pub fn run(branch_name: Option<String>, verbose: bool) -> Result<()> {
     git::fetch_prune(verbose)?;
     output::success("Fetched");
 
-    // Create branch from origin/main
-    git::checkout_new_branch(&branch_name, "origin/main", verbose)?;
+    // Detect default remote branch (origin/main or origin/master)
+    let default_remote = git::get_default_remote_branch()?;
+
+    // Create branch from default remote
+    git::checkout_new_branch(&branch_name, &default_remote, verbose)?;
     output::success(&format!(
-        "Created branch {} from origin/main",
-        output::bold(&branch_name)
+        "Created branch {} from {}",
+        output::bold(&branch_name),
+        default_remote
     ));
 
     // Show current position

@@ -172,8 +172,8 @@ fn get_and_show_pr_info(branch: &str) -> (Option<PrInfo>, Option<String>) {
             output::info("PR: none");
             (None, None)
         }
-        Err(_) => {
-            // Silently skip PR info on error
+        Err(e) => {
+            output::warn(&format!("Could not fetch PR info: {}", e));
             (None, None)
         }
     }
