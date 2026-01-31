@@ -3,224 +3,136 @@
 [![Crates.io](https://img.shields.io/crates/v/git-workflow.svg)](https://crates.io/crates/git-workflow)
 [![License](https://img.shields.io/crates/l/git-workflow.svg)](https://github.com/lanegrid/git-workflow#license)
 
-A type-safe Git workflow CLI with worktree support and GitHub integration.
+**Git guardrails for AI coding agents.**
 
-## Features
+A CLI that wraps common git workflows with safety checks and clear state feedback—designed so AI agents (and humans) can operate git repositories without footguns.
 
-- **Always up-to-date** - Automatically fetches from origin, so you never branch from a stale main
-- **Type-safe branch protection** - Prevents accidental deletion of protected branches (main, master, home)
-- **Git worktree aware** - Automatically detects and works with git worktrees
-- **GitHub integration** - Fetches PR information to make informed decisions about branch operations
-- **Smart state detection** - Detects repository state and suggests next actions
-- **Minimal dependencies** - Built with Rust for fast execution
+## Why?
 
-## Installation
+AI coding agents like Claude Code are powerful, but git is full of sharp edges:
 
-### From crates.io
+- Branching from stale `main` → merge conflicts later
+- Forgetting to check PR status before deleting branches → lost work
+- Running `git pull` on a diverged branch → unexpected merge commits
+- Deleting protected branches → disaster
+
+`git-workflow` solves this by providing:
+
+| Problem | gw Solution |
+|---------|-------------|
+| Stale branches | Auto-fetches before every operation |
+| Accidental deletions | Type-safe branch protection |
+| Unclear state | `gw status` shows exactly what to do next |
+| Diverged branches | Fast-forward only, with clear error + hints |
+| Context switching | `gw pause` / `gw abandon` for clean exits |
+
+## For AI Agents
+
+`git-workflow` is designed to give AI agents the context they need to make good decisions:
+
+```
+$ git-workflow status
+ℹ Branch: feature/add-auth
+ℹ PR: #42 (open, 2 commits ahead)
+✓ Working directory: clean
+→ Next: ready to push or create PR
+```
+
+The structured output and `→ Next:` hints make it easy for agents to understand repository state and choose appropriate actions.
+
+### Claude Code Integration
+
+Add to your project's `CLAUDE.md`:
+
+```markdown
+## Git Workflow
+
+Use `git-workflow` commands for git operations:
+
+- `git-workflow new feature/name` - Create branch (auto-fetches from origin)
+- `git-workflow status` - Check state and see next action
+- `git-workflow pause "message"` - Save WIP and switch context
+- `git-workflow cleanup` - Delete merged branch safely
+- `git-workflow sync` - Update after base PR merged
+```
+
+Or use the `/git-workflow` skill if configured.
+
+## Quick Start
 
 ```bash
+# Install
 cargo install git-workflow
+
+# Start work
+git-workflow new feature/user-auth
+# → Creates branch from latest origin/main
+
+# Check status anytime
+git-workflow status
+# → Shows state + suggested next action
+
+# Clean up after merge
+git-workflow cleanup
+# → Verifies PR merged, deletes branch, returns home
 ```
 
-### From source
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `git-workflow new <branch>` | Create branch from `origin/main` (fetches first) |
+| `git-workflow status` | Show state and suggested next action |
+| `git-workflow home` | Return to home branch, sync with origin |
+| `git-workflow sync` | Sync current branch with origin/main |
+| `git-workflow cleanup [branch]` | Delete merged branch (checks PR status) |
+| `git-workflow pause [msg]` | WIP commit + return home |
+| `git-workflow abandon` | Discard changes + return home |
+| `git-workflow undo` | Soft reset last commit |
+
+> **Tip**: `gw` is available as a shorthand alias (e.g., `gw status`).
+
+### Safety Features
+
+- **Auto-fetch**: Every command fetches from origin first
+- **Protected branches**: Cannot delete `main`, `master`, or home branch
+- **PR verification**: `cleanup` checks GitHub PR status before deletion
+- **Fast-forward only**: `sync`/`home` refuse to create merge commits on diverged branches
+
+## Git Worktree Support
+
+Works seamlessly with git worktrees. Each worktree has its own "home branch":
 
 ```bash
-git clone https://github.com/lanegrid/git-workflow.git
-cd git-workflow
-cargo install --path .
-```
+# Main repo → home is 'main'
+# Worktree → home is the worktree's branch
 
-## Quick Demo
-
-```
-$ gw status
-ℹ Branch: main (home)
-→ Next: start new work
-
-$ gw new fix/typo
-✓ Created fix/typo from origin/main
-
-# ... make changes, commit ...
-
-$ gw status
-ℹ Branch: fix/typo (home: main)
-! Unpushed: 1 commit
-→ Next: push and create PR
-
-# ... push, create PR, get merged ...
-
-$ gw cleanup
-✓ PR #42 [MERGED]
-✓ Deleted fix/typo
-✓ Back to main
-```
-
-## Usage
-
-The CLI is invoked using the `gw` command.
-
-### Commands
-
-#### `gw home`
-
-Switch to home branch and sync with `origin/main` (or `origin/master`).
-
-```bash
-gw home
-# Main repo → switches to 'main'
-# Worktree → switches to home branch
-```
-
-#### `gw new <branch>`
-
-Create a new branch from `origin/main`.
-
-```bash
-gw new feature/add-login
-gw new fix/memory-leak
-```
-
-#### `gw status`
-
-Show current repository state including:
-- Repository type (main repo or worktree)
-- Current branch and sync status
-- Working directory state
-- Suggested next action
-
-```bash
-gw status
-# ℹ Repository: worktree (home: feature-x)
-# ✓ Branch: feature-x (home)
-# ✓ Working directory: clean
-# → Next: start new work
-```
-
-#### `gw cleanup [branch]`
-
-Delete a merged branch and return to home. Uses GitHub CLI to verify PR merge status.
-
-```bash
-gw cleanup              # cleanup current branch
-gw cleanup feature/old  # cleanup specific branch
-```
-
-#### `gw pause [message]`
-
-Create a WIP commit with all changes and return to home branch.
-
-```bash
-gw pause
-gw pause "waiting for API review"
-```
-
-#### `gw abandon`
-
-Discard all changes and return to home branch.
-
-```bash
-gw abandon
-```
-
-#### `gw undo`
-
-Undo the last commit (soft reset to HEAD~1).
-
-```bash
-gw undo
-```
-
-#### `gw sync`
-
-After a base PR is merged, update the base to main and rebase.
-
-```bash
-gw sync
-```
-
-### Global Options
-
-- `-v, --verbose` - Show git commands being executed
-
-```bash
-gw -v status
-gw --verbose cleanup
+git worktree add ../feature-x feature-x
+cd ../feature-x
+git-workflow status  # Home: feature-x
 ```
 
 ## Prerequisites
 
 - Git
-- [GitHub CLI (gh)](https://cli.github.com/) - Required for `cleanup` and `sync` commands
+- [GitHub CLI (gh)](https://cli.github.com/) - Required for `cleanup` and `sync`
 
-## Workflow Example
-
-```bash
-# Start new feature
-gw new feature/user-auth
-
-# ... work on feature ...
-
-# Need to switch context? Pause work
-gw pause "blocked on API changes"
-
-# Switch to another task
-gw new fix/urgent-bug
-
-# ... fix the bug ...
-
-# Clean up after PR is merged
-gw cleanup
-
-# Resume previous work
-git checkout feature/user-auth
-
-# Check status anytime
-gw status
-```
-
-## Git Worktree Support
-
-`gw` is designed to work seamlessly with [git worktrees](https://git-scm.com/docs/git-worktree), enabling parallel development on multiple features.
-
-### How it works
-
-Each worktree has its own "home branch":
-
-- **Main repo**: `main` (or `master`)
-- **Worktree**: Currently uses the directory name
+## Installation
 
 ```bash
-# Create a worktree
-git worktree add ../feature-a feature-a
-cd ../feature-a
-gw status   # Home: feature-a
-```
+# From crates.io
+cargo install git-workflow
 
-### Example: Parallel Development
-
-```bash
-# Work on feature-a in one worktree
-cd ~/projects/feature-a
-gw pause "WIP: need input"
-
-# Work on feature-b in another worktree
-cd ~/projects/feature-b
-gw status   # Home: feature-b
-
-# Resume feature-a
-cd ~/projects/feature-a
-gw undo     # Undo WIP commit
+# From source
+git clone https://github.com/lanegrid/git-workflow.git
+cd git-workflow
+cargo install --path .
 ```
 
 ## License
 
-Licensed under either of:
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
-at your option.
+MIT OR Apache-2.0
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions welcome! Please submit a Pull Request.

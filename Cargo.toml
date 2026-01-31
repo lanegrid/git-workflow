@@ -3,7 +3,7 @@ name = "git-workflow"
 version = "0.1.4"
 edition = "2024"
 authors = ["zawakin"]
-description = "Git workflow CLI - type-safe worktree-aware git operations with GitHub integration"
+description = "Git guardrails for AI coding agents - safe git workflows with clear state feedback"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lanegrid/git-workflow"
 homepage = "https://github.com/lanegrid/git-workflow"
@@ -12,6 +12,10 @@ readme = "README.md"
 keywords = ["git", "workflow", "cli", "worktree", "github"]
 categories = ["command-line-utilities", "development-tools"]
 rust-version = "1.85"
+
+[[bin]]
+name = "git-workflow"
+path = "src/main.rs"
 
 [[bin]]
 name = "gw"
