@@ -2,7 +2,7 @@
 name: git-workflow
 description: Development workflow using gw CLI for feature branches, PRs, and cleanup
 argument-hint: <command> [args]
-allowed-tools: Bash(gw*), Bash(gh*), Bash(git*), Bash(mise*), Bash(cargo*), Read, Edit, Grep, Glob
+allowed-tools: Bash(gw*), Bash(git-workflow*), Bash(gh*), Bash(git*), Bash(mise*), Bash(cargo*), Bash(open*), Read, Edit, Grep, Glob
 ---
 
 # git-workflow Development
@@ -32,7 +32,7 @@ Parse `$ARGUMENTS` and execute the appropriate workflow:
 2. Run `mise run verify` to check code quality
 3. Push branch: `git push -u origin <branch>`
 4. Create PR: `gh pr create --fill` or with provided title
-5. Return PR URL
+5. Open PR in browser: `open <PR_URL>`
 
 ### `cleanup [branch]` - Clean up merged branch
 
