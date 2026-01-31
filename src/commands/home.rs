@@ -1,5 +1,6 @@
 //! `gw home` command - Switch to home branch and sync with origin/main
 
+use super::helpers;
 use crate::error::{GwError, Result};
 use crate::git;
 use crate::output;
@@ -53,21 +54,7 @@ pub fn run(verbose: bool) -> Result<()> {
     }
 
     // Sync with default remote branch
-    output::info(&format!("Syncing with {}...", default_remote));
-    let before = git::head_commit()?;
-    git::pull("origin", default_branch, verbose)?;
-    let after = git::head_commit()?;
-
-    if before != after {
-        let count = git::commit_count(&before, &after)?;
-        output::success(&format!(
-            "Pulled {} commit(s) from {}",
-            output::bold(&count.to_string()),
-            default_remote
-        ));
-    } else {
-        output::success(&format!("Already up to date with {}", default_remote));
-    }
+    helpers::pull_with_output(&default_remote, default_branch, verbose)?;
 
     output::ready("Ready", home_branch);
     output::hints(&["mise run git:new feature/your-feature  # Create new branch"]);

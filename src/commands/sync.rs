@@ -22,6 +22,7 @@
 //!   ✓ Synced
 //! ```
 
+use super::helpers;
 use crate::error::{GwError, Result};
 use crate::git;
 use crate::github::{self, PrState};
@@ -50,10 +51,22 @@ pub fn run(verbose: bool) -> Result<()> {
     let home_branch = repo_type.home_branch();
     let current = git::current_branch()?;
 
-    // Don't run on home branch
+    // On home branch - just sync with origin/main
     if current == home_branch {
-        output::warn("Already on home branch. Nothing to sync.");
-        output::hints(&["mise run git:new feature/...  # Create a feature branch first"]);
+        println!();
+        output::info(&format!("Branch: {}", output::bold(&current)));
+
+        // Fetch latest
+        output::info("Fetching from origin...");
+        git::fetch_prune(verbose)?;
+        output::success("Fetched (stale remote branches pruned)");
+
+        // Detect default remote branch and sync
+        let default_remote = git::get_default_remote_branch()?;
+        let default_branch = default_remote.strip_prefix("origin/").unwrap_or("main");
+        helpers::pull_with_output(&default_remote, default_branch, verbose)?;
+
+        output::ready("Ready", home_branch);
         return Ok(());
     }
 
