@@ -120,7 +120,10 @@ git-workflow status  # Home: feature-x
 ## Installation
 
 ```bash
-# From crates.io
+# Quick install (macOS/Linux)
+curl -fsSL https://github.com/lanegrid/git-workflow/releases/latest/download/install.sh | sh
+
+# With Cargo
 cargo install git-workflow
 
 # From source
@@ -128,6 +131,11 @@ git clone https://github.com/lanegrid/git-workflow.git
 cd git-workflow
 cargo install --path .
 ```
+
+Pre-built binaries are available for:
+- macOS (Intel & Apple Silicon)
+- Linux (x64 & ARM64)
+- Windows (x64)
 
 ## License
 
