@@ -16,8 +16,8 @@ fn strip_ansi(s: &str) -> String {
 fn create_origin_repo() -> TempDir {
     let dir = TempDir::new().expect("Failed to create temp dir");
 
-    // Initialize bare repo
-    run_git(dir.path(), &["init", "--bare"]);
+    // Initialize bare repo with main as default branch
+    run_git(dir.path(), &["init", "--bare", "--initial-branch=main"]);
 
     dir
 }
@@ -101,6 +101,8 @@ fn test_sync_on_home_branch_pulls_from_origin() {
         &["config", "user.email", "contrib@example.com"],
     );
     run_git(contributor.path(), &["config", "user.name", "Contributor"]);
+    // Ensure we're on main branch (clone might default to master on older git)
+    run_git(contributor.path(), &["checkout", "main"]);
     std::fs::write(contributor.path().join("new_file.txt"), "new content")
         .expect("Failed to write file");
     run_git(contributor.path(), &["add", "."]);
