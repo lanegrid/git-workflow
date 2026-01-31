@@ -58,6 +58,14 @@ pub fn checkout_new_branch(branch: &str, start_point: &str, verbose: bool) -> Re
     git_run(&["checkout", "-b", branch, start_point, "--quiet"], verbose)
 }
 
+/// Pull from a remote branch (fast-forward only, safe)
+///
+/// Returns an error if the pull cannot be done as a fast-forward,
+/// which happens when the local branch has diverged from the remote.
+pub fn pull_ff_only(remote: &str, branch: &str, verbose: bool) -> Result<()> {
+    git_run(&["pull", remote, branch, "--ff-only", "--quiet"], verbose)
+}
+
 /// Pull from a remote branch
 pub fn pull(remote: &str, branch: &str, verbose: bool) -> Result<()> {
     // Try ff-only first (safer), then fallback to normal pull
