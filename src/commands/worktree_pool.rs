@@ -11,6 +11,20 @@ use crate::pool::{Inventory, PoolEntry, PoolLock, WorktreeStatus};
 /// Directory name under git_common_dir for pool metadata
 const POOL_META_DIR: &str = "worktree-pool";
 
+/// Canonicalize a path, stripping the `\\?\` prefix on Windows so that
+/// external tools (like git) can consume the path without issues.
+fn canonicalize_clean(path: &Path) -> PathBuf {
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    #[cfg(target_os = "windows")]
+    {
+        let s = canonical.to_string_lossy();
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped);
+        }
+    }
+    canonical
+}
+
 /// Directory name under repo root for pool worktrees
 const POOL_WORKTREES_DIR: &str = ".worktrees";
 
@@ -24,7 +38,7 @@ fn main_repo_root() -> Result<PathBuf> {
     let common = git::git_common_dir()?;
     // git_common_dir may return a relative path like ".git", so canonicalize
     // to get an absolute path before taking the parent.
-    let common = std::fs::canonicalize(&common).unwrap_or(common);
+    let common = canonicalize_clean(&common);
     common
         .parent()
         .map(|p| p.to_path_buf())
@@ -127,9 +141,7 @@ pub fn warm(count: usize, verbose: bool) -> Result<()> {
     let mut created = 0;
     for i in 0..to_create {
         let name = inventory.next_name();
-        let abs_path = std::fs::canonicalize(&wt_dir)
-            .unwrap_or_else(|_| wt_dir.clone())
-            .join(&name);
+        let abs_path = canonicalize_clean(&wt_dir).join(&name);
         let abs_path_str = abs_path.to_string_lossy().to_string();
         let branch = format!("pool/{name}");
 
@@ -243,13 +255,10 @@ pub fn release(identifier: Option<&str>, verbose: bool) -> Result<()> {
     // Auto-detect from cwd if no identifier given
     let resolved = match identifier {
         Some(id) => id.to_string(),
-        None => {
-            let cwd = std::env::current_dir()
-                .map_err(GwError::Io)?
-                .to_string_lossy()
-                .to_string();
-            cwd
-        }
+        None => std::env::current_dir()
+            .map_err(GwError::Io)?
+            .to_string_lossy()
+            .to_string(),
     };
 
     println!();

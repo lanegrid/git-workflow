@@ -1,5 +1,5 @@
 [tools]
-rust = "1.85"
+rust = "latest"
 
 [tasks.verify]
 description = "Run all checks (fmt, check, lint, test, build)"
