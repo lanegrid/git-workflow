@@ -155,7 +155,12 @@ fn ensure_excluded() -> Result<()> {
     Ok(())
 }
 
-/// Release a single pool worktree: checkout home branch, clean files, remove marker, run setup hook.
+/// Release a single pool worktree back to the pool.
+///
+/// In addition to removing the acquire marker, this resets the worktree to a
+/// clean state (checkout home branch, reset to remote HEAD, clean untracked
+/// files, re-run setup hook). This "eager refresh" keeps acquire instant —
+/// the cost is paid once at release time rather than on every acquire.
 fn release_one(
     entry: &PoolEntry,
     acquired_dir: &Path,
@@ -363,16 +368,16 @@ pub fn release(name: Option<String>, verbose: bool) -> Result<()> {
         return Err(GwError::PoolNotInitialized);
     }
 
+    // Fetch BEFORE taking the lock — network I/O must not block other pool operations
+    git::fetch_prune(verbose)?;
+    let default_remote = git::get_default_remote_branch()?;
+
     let _lock = PoolLock::acquire(&pool_dir)?;
     let state = PoolState::scan(&wt_dir, &acquired_dir, &prefix)?;
 
     if state.entries.is_empty() {
         return Err(GwError::PoolNotInitialized);
     }
-
-    // Fetch once to get fresh default remote
-    git::fetch_prune(verbose)?;
-    let default_remote = git::get_default_remote_branch()?;
 
     println!();
 
@@ -381,13 +386,10 @@ pub fn release(name: Option<String>, verbose: bool) -> Result<()> {
             // Release a specific worktree by name
             let entry = state
                 .find_by_name_or_path(n)
-                .ok_or_else(|| GwError::Other(format!("Worktree '{}' not found in pool", n)))?;
+                .ok_or_else(|| GwError::PoolWorktreeNotFound(n.clone()))?;
 
             if entry.status != WorktreeStatus::Acquired {
-                return Err(GwError::Other(format!(
-                    "Worktree '{}' is not acquired",
-                    entry.name
-                )));
+                return Err(GwError::PoolWorktreeNotAcquired(entry.name.clone()));
             }
 
             release_one(entry, &acquired_dir, &repo_root, &default_remote, verbose)?;
@@ -401,9 +403,7 @@ pub fn release(name: Option<String>, verbose: bool) -> Result<()> {
                 .collect();
 
             if acquired.is_empty() {
-                return Err(GwError::Other(
-                    "No acquired worktrees to release".to_string(),
-                ));
+                return Err(GwError::PoolNoneAcquired);
             }
 
             let total = acquired.len();

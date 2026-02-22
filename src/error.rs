@@ -50,6 +50,15 @@ pub enum GwError {
     #[error("Pool has {0} acquired worktree(s). Release them first or use --force.")]
     PoolHasAcquiredWorktrees(usize),
 
+    #[error("No acquired worktrees to release. Nothing to do.")]
+    PoolNoneAcquired,
+
+    #[error("Worktree '{0}' not found in pool")]
+    PoolWorktreeNotFound(String),
+
+    #[error("Worktree '{0}' is not acquired")]
+    PoolWorktreeNotAcquired(String),
+
     #[error("Could not acquire pool lock within timeout")]
     PoolLockTimeout,
 

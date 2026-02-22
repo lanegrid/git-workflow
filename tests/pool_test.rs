@@ -536,7 +536,10 @@ fn test_release_fails_when_none_acquired() {
     );
 
     let err = stderr_str(&output);
-    assert!(err.contains("No acquired worktrees"), "stderr: {err}");
+    assert!(
+        err.contains("No acquired worktrees to release"),
+        "stderr: {err}"
+    );
 }
 
 // --- full workflow ---
