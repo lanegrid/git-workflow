@@ -25,7 +25,7 @@ fn main() -> ExitCode {
                 PoolCommands::Warm { count } => commands::worktree_pool::warm(count, cli.verbose),
                 PoolCommands::Acquire => commands::worktree_pool::acquire(cli.verbose),
                 PoolCommands::Release { identifier } => {
-                    commands::worktree_pool::release(&identifier, cli.verbose)
+                    commands::worktree_pool::release(identifier.as_deref(), cli.verbose)
                 }
                 PoolCommands::Status => commands::worktree_pool::status(),
                 PoolCommands::Drain { force } => commands::worktree_pool::drain(force, cli.verbose),

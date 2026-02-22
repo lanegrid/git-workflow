@@ -77,10 +77,10 @@ pub enum PoolCommands {
     /// Acquire a worktree from the pool (prints path to stdout)
     Acquire,
 
-    /// Release a worktree back to the pool
+    /// Release a worktree back to the pool (auto-detects from cwd if omitted)
     Release {
-        /// Worktree name (e.g., pool-001) or absolute path
-        identifier: String,
+        /// Worktree name (e.g., pool-001) or absolute path. Omit to detect from cwd.
+        identifier: Option<String>,
     },
 
     /// Show pool status

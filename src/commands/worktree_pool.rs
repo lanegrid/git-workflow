@@ -17,6 +17,20 @@ const POOL_WORKTREES_DIR: &str = ".worktrees";
 /// Setup hook path relative to repo root
 const SETUP_HOOK: &str = ".gw/setup";
 
+/// Get the main repository root (parent of .git), even from inside a worktree.
+/// Unlike `git::repo_root()` which returns the worktree root when called from
+/// inside a worktree, this always returns the main repo root.
+fn main_repo_root() -> Result<PathBuf> {
+    let common = git::git_common_dir()?;
+    // git_common_dir may return a relative path like ".git", so canonicalize
+    // to get an absolute path before taking the parent.
+    let common = std::fs::canonicalize(&common).unwrap_or(common);
+    common
+        .parent()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| GwError::Other("Could not determine main repository root".to_string()))
+}
+
 /// Resolve the pool metadata directory ({git_common_dir}/worktree-pool/)
 fn pool_dir() -> Result<PathBuf> {
     let common = git::git_common_dir()?;
@@ -28,9 +42,9 @@ fn inventory_path() -> Result<PathBuf> {
     Ok(pool_dir()?.join("inventory.json"))
 }
 
-/// Resolve the worktrees directory ({repo_root}/.worktrees/)
+/// Resolve the worktrees directory ({main_repo_root}/.worktrees/)
 fn worktrees_dir() -> Result<PathBuf> {
-    let root = git::repo_root()?;
+    let root = main_repo_root()?;
     Ok(root.join(POOL_WORKTREES_DIR))
 }
 
@@ -76,7 +90,7 @@ pub fn warm(count: usize, verbose: bool) -> Result<()> {
     let pool_dir = pool_dir()?;
     let inv_path = inventory_path()?;
     let wt_dir = worktrees_dir()?;
-    let repo_root = git::repo_root()?;
+    let repo_root = main_repo_root()?;
 
     println!();
     output::info(&format!(
@@ -89,9 +103,11 @@ pub fn warm(count: usize, verbose: bool) -> Result<()> {
     let mut inventory = Inventory::load(&inv_path)?;
 
     let available = inventory.count_by_status(&WorktreeStatus::Available);
+    let acquired = inventory.count_by_status(&WorktreeStatus::Acquired);
+    let total = inventory.worktrees.len();
     if available >= count {
         output::success(&format!(
-            "Pool already has {available} available worktree(s), nothing to do"
+            "Pool already has {available} available ({acquired} acquired, {total} total), nothing to do"
         ));
         return Ok(());
     }
@@ -168,7 +184,7 @@ pub fn warm(count: usize, verbose: bool) -> Result<()> {
 }
 
 /// `gw worktree pool acquire`
-pub fn acquire(verbose: bool) -> Result<()> {
+pub fn acquire(_verbose: bool) -> Result<()> {
     if !git::is_git_repo() {
         return Err(GwError::NotAGitRepository);
     }
@@ -195,14 +211,14 @@ pub fn acquire(verbose: bool) -> Result<()> {
 
     inventory.save(&inv_path)?;
 
-    // Print status info to stderr so stdout is clean for scripting
-    if verbose {
-        eprintln!(
-            "\x1b[0;32m\u{2713}\x1b[0m Acquired {} (PID {})",
-            name,
-            std::process::id()
-        );
-    }
+    // Always print status to stderr so stdout stays clean for scripting
+    let remaining = inventory.count_by_status(&WorktreeStatus::Available);
+    eprintln!(
+        "\x1b[0;32m\u{2713}\x1b[0m Acquired {} (PID {}, {} remaining)",
+        name,
+        std::process::id(),
+        remaining,
+    );
 
     // Print ONLY the path to stdout for `path=$(gw worktree pool acquire)`
     println!("{path}");
@@ -210,35 +226,52 @@ pub fn acquire(verbose: bool) -> Result<()> {
     Ok(())
 }
 
-/// `gw worktree pool release <name|path>`
-pub fn release(identifier: &str, verbose: bool) -> Result<()> {
+/// `gw worktree pool release [name|path]`
+pub fn release(identifier: Option<&str>, verbose: bool) -> Result<()> {
     if !git::is_git_repo() {
         return Err(GwError::NotAGitRepository);
     }
 
     let pool_dir = pool_dir()?;
     let inv_path = inventory_path()?;
-    let repo_root = git::repo_root()?;
+    let repo_root = main_repo_root()?;
 
     if !inv_path.exists() {
         return Err(GwError::PoolNotInitialized);
     }
 
+    // Auto-detect from cwd if no identifier given
+    let resolved = match identifier {
+        Some(id) => id.to_string(),
+        None => {
+            let cwd = std::env::current_dir()
+                .map_err(GwError::Io)?
+                .to_string_lossy()
+                .to_string();
+            cwd
+        }
+    };
+
     println!();
-    output::info(&format!("Releasing worktree: {}", output::bold(identifier)));
+    output::info(&format!("Releasing worktree: {}", output::bold(&resolved)));
 
     let _lock = PoolLock::acquire(&pool_dir)?;
     let mut inventory = Inventory::load(&inv_path)?;
 
     let idx = inventory
-        .find_by_name_or_path(identifier)
-        .ok_or_else(|| GwError::PoolWorktreeNotFound(identifier.to_string()))?;
+        .find_by_name_or_path(&resolved)
+        .ok_or_else(|| GwError::PoolWorktreeNotFound(resolved.clone()))?;
 
     let entry = &inventory.worktrees[idx];
     let wt_path = entry.path.clone();
     let name = entry.name.clone();
 
     let default_remote = git::get_default_remote_branch()?;
+
+    // Fetch latest before resetting so the worktree gets a fresh base
+    output::info("Fetching from origin...");
+    git::git_run_in_dir(&wt_path, &["fetch", "--prune", "--quiet"], verbose)?;
+    output::success("Fetched");
 
     // Reset worktree to clean state
     output::info("Resetting worktree...");
@@ -319,6 +352,12 @@ pub fn drain(force: bool, verbose: bool) -> Result<()> {
 
     let pool_dir = pool_dir()?;
     let inv_path = inventory_path()?;
+    // Resolve all paths upfront — the cwd might be inside a pool worktree
+    // that we're about to delete, so all git/fs calls after removal must
+    // not depend on cwd being valid.
+    let repo_root = main_repo_root()?;
+    let repo_root_str = repo_root.to_string_lossy().to_string();
+    let wt_dir = worktrees_dir()?;
 
     if !inv_path.exists() {
         return Err(GwError::PoolNotInitialized);
@@ -346,15 +385,20 @@ pub fn drain(force: bool, verbose: bool) -> Result<()> {
             output::bold(&entry.name)
         ));
 
-        // Remove the worktree
-        if let Err(e) = git::worktree_remove(&entry.path, verbose) {
+        // Remove the worktree (run from repo_root so it works even if cwd is deleted)
+        if let Err(e) = git::git_run_in_dir(
+            &repo_root_str,
+            &["worktree", "remove", "--force", &entry.path],
+            verbose,
+        ) {
             output::warn(&format!("Failed to remove worktree {}: {e}", entry.name));
-            // Try to remove the directory manually if worktree remove failed
             let _ = std::fs::remove_dir_all(&entry.path);
         }
 
         // Delete the pool branch
-        if let Err(e) = git::force_delete_branch(&entry.branch, verbose) {
+        if let Err(e) =
+            git::git_run_in_dir(&repo_root_str, &["branch", "-D", &entry.branch], verbose)
+        {
             output::warn(&format!("Failed to delete branch {}: {e}", entry.branch));
         }
 
@@ -363,18 +407,15 @@ pub fn drain(force: bool, verbose: bool) -> Result<()> {
 
     // Clean up pool metadata
     let _ = std::fs::remove_file(&inv_path);
-    // Remove pool.lock (we hold it, but we're about to drop)
     let _ = std::fs::remove_file(pool_dir.join("pool.lock"));
 
     // Prune worktree references
-    git::worktree_prune(verbose)?;
+    git::git_run_in_dir(&repo_root_str, &["worktree", "prune"], verbose)?;
 
     // Remove empty directories
-    let wt_dir = worktrees_dir()?;
     if wt_dir.exists() {
-        let _ = std::fs::remove_dir(&wt_dir); // Only succeeds if empty
+        let _ = std::fs::remove_dir(&wt_dir);
     }
-    // Try to remove pool dir (will only succeed if empty after lock release)
     drop(_lock);
     let _ = std::fs::remove_dir(&pool_dir);
 
