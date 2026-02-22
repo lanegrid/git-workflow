@@ -47,9 +47,6 @@ pub enum GwError {
     #[error("No available worktrees in the pool. Run `gw worktree pool warm <n>` to add more.")]
     PoolExhausted,
 
-    #[error("Worktree not found in pool: {0}")]
-    PoolWorktreeNotFound(String),
-
     #[error("Pool has {0} acquired worktree(s). Release them first or use --force.")]
     PoolHasAcquiredWorktrees(usize),
 

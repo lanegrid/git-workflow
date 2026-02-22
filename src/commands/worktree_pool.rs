@@ -1,15 +1,26 @@
 //! `gw worktree pool` commands — Worktree pool management
+//!
+//! Pool state is derived from the filesystem, not from an inventory file.
+//! Marker files in `.git/worktree-pool/acquired/` track acquisition state.
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::{GwError, Result};
 use crate::git;
 use crate::output;
-use crate::pool::{Inventory, PoolEntry, PoolLock, WorktreeStatus};
+use crate::pool::{PoolEntry, PoolLock, PoolNextAction, PoolState, WorktreeStatus};
 
 /// Directory name under git_common_dir for pool metadata
 const POOL_META_DIR: &str = "worktree-pool";
+
+/// Directory name under repo root for pool worktrees
+const POOL_WORKTREES_DIR: &str = ".worktrees";
+
+/// Setup hook path relative to repo root
+const SETUP_HOOK: &str = ".gw/setup";
+
+/// Subdirectory for acquire markers
+const ACQUIRED_DIR: &str = "acquired";
 
 /// Canonicalize a path, stripping the `\\?\` prefix on Windows so that
 /// external tools (like git) can consume the path without issues.
@@ -25,19 +36,9 @@ fn canonicalize_clean(path: &Path) -> PathBuf {
     canonical
 }
 
-/// Directory name under repo root for pool worktrees
-const POOL_WORKTREES_DIR: &str = ".worktrees";
-
-/// Setup hook path relative to repo root
-const SETUP_HOOK: &str = ".gw/setup";
-
 /// Get the main repository root (parent of .git), even from inside a worktree.
-/// Unlike `git::repo_root()` which returns the worktree root when called from
-/// inside a worktree, this always returns the main repo root.
 fn main_repo_root() -> Result<PathBuf> {
     let common = git::git_common_dir()?;
-    // git_common_dir may return a relative path like ".git", so canonicalize
-    // to get an absolute path before taking the parent.
     let common = canonicalize_clean(&common);
     common
         .parent()
@@ -51,23 +52,15 @@ fn pool_dir() -> Result<PathBuf> {
     Ok(common.join(POOL_META_DIR))
 }
 
-/// Resolve the inventory file path
-fn inventory_path() -> Result<PathBuf> {
-    Ok(pool_dir()?.join("inventory.json"))
+/// Resolve the acquired markers directory
+fn acquired_dir() -> Result<PathBuf> {
+    Ok(pool_dir()?.join(ACQUIRED_DIR))
 }
 
 /// Resolve the worktrees directory ({main_repo_root}/.worktrees/)
 fn worktrees_dir() -> Result<PathBuf> {
     let root = main_repo_root()?;
     Ok(root.join(POOL_WORKTREES_DIR))
-}
-
-/// Get current unix timestamp
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 /// Run the setup hook if it exists
@@ -95,6 +88,77 @@ fn run_setup_hook(repo_root: &Path, worktree_path: &str, verbose: bool) -> Resul
     Ok(())
 }
 
+/// Get the current branch of a worktree by running git in that directory
+fn worktree_current_branch(path: &Path) -> String {
+    let path_str = path.to_string_lossy();
+    std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(&*path_str)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "???".to_string())
+}
+
+/// Get the owner name for acquire markers (current worktree directory name)
+fn current_owner_name() -> String {
+    git::current_dir_name().unwrap_or_else(|_| "unknown".to_string())
+}
+
+/// Check if the current directory is inside a pool worktree.
+/// Returns the pool worktree name if so.
+pub fn detect_pool_worktree() -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let wt_dir = worktrees_dir().ok()?;
+
+    if !cwd.starts_with(&wt_dir) {
+        return None;
+    }
+
+    // Get the pool worktree directory name (first component after .worktrees/)
+    cwd.strip_prefix(&wt_dir)
+        .ok()
+        .and_then(|rel| rel.components().next())
+        .and_then(|c| c.as_os_str().to_str())
+        .filter(|name| name.starts_with("pool-"))
+        .map(String::from)
+}
+
+/// Release a pool worktree: clean files, remove marker, run setup hook.
+/// Called from `gw cleanup` when inside a pool worktree.
+pub fn pool_release_after_cleanup(pool_name: &str, verbose: bool) -> Result<()> {
+    let acquired_dir = acquired_dir()?;
+    let repo_root = main_repo_root()?;
+    let wt_dir = worktrees_dir()?;
+    let wt_path = wt_dir.join(pool_name);
+    let wt_path_str = wt_path.to_string_lossy().to_string();
+
+    output::info("Releasing pool worktree...");
+
+    // Clean untracked files
+    git::git_run_in_dir(&wt_path_str, &["clean", "-fd"], verbose)?;
+
+    // Run setup hook (if it fails, keep marker and warn)
+    if let Err(e) = run_setup_hook(&repo_root, &wt_path_str, verbose) {
+        output::warn(&format!(
+            "Setup hook failed during release: {e}. Worktree remains acquired."
+        ));
+        return Ok(());
+    }
+
+    // Remove acquired marker
+    let marker = acquired_dir.join(pool_name);
+    if marker.exists() {
+        std::fs::remove_file(&marker)?;
+    }
+
+    output::success("Pool worktree released and available for reuse");
+    Ok(())
+}
+
+// --- Pool commands ---
+
 /// `gw worktree pool warm <n>`
 pub fn warm(count: usize, verbose: bool) -> Result<()> {
     if !git::is_git_repo() {
@@ -102,8 +166,8 @@ pub fn warm(count: usize, verbose: bool) -> Result<()> {
     }
 
     let pool_dir = pool_dir()?;
-    let inv_path = inventory_path()?;
     let wt_dir = worktrees_dir()?;
+    let acquired_dir = acquired_dir()?;
     let repo_root = main_repo_root()?;
 
     println!();
@@ -112,13 +176,13 @@ pub fn warm(count: usize, verbose: bool) -> Result<()> {
         output::bold(&count.to_string())
     ));
 
-    // Acquire lock and load inventory
+    // Acquire lock and scan filesystem
     let _lock = PoolLock::acquire(&pool_dir)?;
-    let mut inventory = Inventory::load(&inv_path)?;
+    let mut state = PoolState::scan(&wt_dir, &acquired_dir)?;
 
-    let available = inventory.count_by_status(&WorktreeStatus::Available);
-    let acquired = inventory.count_by_status(&WorktreeStatus::Acquired);
-    let total = inventory.worktrees.len();
+    let available = state.count_by_status(&WorktreeStatus::Available);
+    let acquired = state.count_by_status(&WorktreeStatus::Acquired);
+    let total = state.entries.len();
     if available >= count {
         output::success(&format!(
             "Pool already has {available} available ({acquired} acquired, {total} total), nothing to do"
@@ -140,10 +204,11 @@ pub fn warm(count: usize, verbose: bool) -> Result<()> {
 
     let mut created = 0;
     for i in 0..to_create {
-        let name = inventory.next_name();
+        let name = state.next_name();
         let abs_path = canonicalize_clean(&wt_dir).join(&name);
         let abs_path_str = abs_path.to_string_lossy().to_string();
-        let branch = format!("pool/{name}");
+        // Branch name = directory name (gw convention: dir name = home branch)
+        let branch = name.clone();
 
         output::info(&format!(
             "[{}/{}] Creating {}...",
@@ -168,24 +233,23 @@ pub fn warm(count: usize, verbose: bool) -> Result<()> {
             continue;
         }
 
-        inventory.worktrees.push(PoolEntry {
+        // Track in-memory for next_name() to work correctly
+        state.entries.push(PoolEntry {
             name: name.clone(),
-            path: abs_path_str,
+            path: abs_path,
             branch,
             status: WorktreeStatus::Available,
-            created_at: now_unix(),
-            acquired_at: None,
-            acquired_by: None,
+            owner: None,
         });
         created += 1;
 
         output::success(&format!("[{}/{}] Created {}", i + 1, to_create, name));
     }
 
-    inventory.save(&inv_path)?;
-
-    let total = inventory.worktrees.len();
-    let available = inventory.count_by_status(&WorktreeStatus::Available);
+    // Re-scan for accurate final counts
+    let final_state = PoolState::scan(&wt_dir, &acquired_dir)?;
+    let total = final_state.entries.len();
+    let available = final_state.count_by_status(&WorktreeStatus::Available);
 
     println!();
     output::success(&format!(
@@ -202,34 +266,37 @@ pub fn acquire(_verbose: bool) -> Result<()> {
     }
 
     let pool_dir = pool_dir()?;
-    let inv_path = inventory_path()?;
+    let wt_dir = worktrees_dir()?;
+    let acquired_dir = acquired_dir()?;
 
-    if !inv_path.exists() {
+    if !wt_dir.exists() {
         return Err(GwError::PoolNotInitialized);
     }
 
     let _lock = PoolLock::acquire(&pool_dir)?;
-    let mut inventory = Inventory::load(&inv_path)?;
 
-    let idx = inventory.find_available().ok_or(GwError::PoolExhausted)?;
+    // Ensure acquired dir exists
+    std::fs::create_dir_all(&acquired_dir)?;
 
-    let entry = &mut inventory.worktrees[idx];
-    entry.status = WorktreeStatus::Acquired;
-    entry.acquired_at = Some(now_unix());
-    entry.acquired_by = Some(std::process::id());
+    let state = PoolState::scan(&wt_dir, &acquired_dir)?;
 
-    let path = entry.path.clone();
+    if state.entries.is_empty() {
+        return Err(GwError::PoolNotInitialized);
+    }
+
+    let entry = state.find_available().ok_or(GwError::PoolExhausted)?;
+
+    // Create marker file with owner name
+    let owner = current_owner_name();
+    std::fs::write(acquired_dir.join(&entry.name), &owner)?;
+
+    let path = entry.path.to_string_lossy().to_string();
     let name = entry.name.clone();
 
-    inventory.save(&inv_path)?;
-
-    // Always print status to stderr so stdout stays clean for scripting
-    let remaining = inventory.count_by_status(&WorktreeStatus::Available);
+    let remaining = state.count_by_status(&WorktreeStatus::Available) - 1;
     eprintln!(
-        "\x1b[0;32m\u{2713}\x1b[0m Acquired {} (PID {}, {} remaining)",
-        name,
-        std::process::id(),
-        remaining,
+        "\x1b[0;32m\u{2713}\x1b[0m Acquired {} (owner: {}, {} remaining)",
+        name, owner, remaining,
     );
 
     // Print ONLY the path to stdout for `path=$(gw worktree pool acquire)`
@@ -238,91 +305,29 @@ pub fn acquire(_verbose: bool) -> Result<()> {
     Ok(())
 }
 
-/// `gw worktree pool release [name|path]`
-pub fn release(identifier: Option<&str>, verbose: bool) -> Result<()> {
-    if !git::is_git_repo() {
-        return Err(GwError::NotAGitRepository);
-    }
-
-    let pool_dir = pool_dir()?;
-    let inv_path = inventory_path()?;
-    let repo_root = main_repo_root()?;
-
-    if !inv_path.exists() {
-        return Err(GwError::PoolNotInitialized);
-    }
-
-    // Auto-detect from cwd if no identifier given
-    let resolved = match identifier {
-        Some(id) => id.to_string(),
-        None => std::env::current_dir()
-            .map_err(GwError::Io)?
-            .to_string_lossy()
-            .to_string(),
-    };
-
-    println!();
-    output::info(&format!("Releasing worktree: {}", output::bold(&resolved)));
-
-    let _lock = PoolLock::acquire(&pool_dir)?;
-    let mut inventory = Inventory::load(&inv_path)?;
-
-    let idx = inventory
-        .find_by_name_or_path(&resolved)
-        .ok_or_else(|| GwError::PoolWorktreeNotFound(resolved.clone()))?;
-
-    let entry = &inventory.worktrees[idx];
-    let wt_path = entry.path.clone();
-    let name = entry.name.clone();
-
-    let default_remote = git::get_default_remote_branch()?;
-
-    // Fetch latest before resetting so the worktree gets a fresh base
-    output::info("Fetching from origin...");
-    git::git_run_in_dir(&wt_path, &["fetch", "--prune", "--quiet"], verbose)?;
-    output::success("Fetched");
-
-    // Reset worktree to clean state
-    output::info("Resetting worktree...");
-    git::git_run_in_dir(&wt_path, &["reset", "--hard", &default_remote], verbose)?;
-    git::git_run_in_dir(&wt_path, &["clean", "-fd"], verbose)?;
-    output::success("Reset to clean state");
-
-    // Re-run setup hook
-    if let Err(e) = run_setup_hook(&repo_root, &wt_path, verbose) {
-        output::warn(&format!("Setup hook failed during release: {e}"));
-    }
-
-    let entry = &mut inventory.worktrees[idx];
-    entry.status = WorktreeStatus::Available;
-    entry.acquired_at = None;
-    entry.acquired_by = None;
-
-    inventory.save(&inv_path)?;
-
-    output::success(&format!("Released {}", output::bold(&name)));
-
-    Ok(())
-}
-
 /// `gw worktree pool status`
-pub fn status() -> Result<()> {
+pub fn status(verbose: bool) -> Result<()> {
     if !git::is_git_repo() {
         return Err(GwError::NotAGitRepository);
     }
 
-    let inv_path = inventory_path()?;
+    let wt_dir = worktrees_dir()?;
+    let acquired_dir = acquired_dir()?;
 
-    if !inv_path.exists() {
+    if !wt_dir.exists() {
         return Err(GwError::PoolNotInitialized);
     }
 
     // Read-only — no lock needed
-    let inventory = Inventory::load(&inv_path)?;
+    let state = PoolState::scan(&wt_dir, &acquired_dir)?;
 
-    let available = inventory.count_by_status(&WorktreeStatus::Available);
-    let acquired = inventory.count_by_status(&WorktreeStatus::Acquired);
-    let total = inventory.worktrees.len();
+    if state.entries.is_empty() {
+        return Err(GwError::PoolNotInitialized);
+    }
+
+    let available = state.count_by_status(&WorktreeStatus::Available);
+    let acquired = state.count_by_status(&WorktreeStatus::Acquired);
+    let total = state.entries.len();
 
     println!();
     output::info(&format!(
@@ -334,23 +339,58 @@ pub fn status() -> Result<()> {
     println!();
 
     // Table header
-    let header = format!("{:<12} {:<12} {:<8} PATH", "NAME", "STATUS", "PID");
+    let header = format!("{:<12} {:<12} {:<24} OWNER", "NAME", "STATUS", "BRANCH");
     println!("{header}");
     println!("{}", "-".repeat(72));
 
-    for entry in &inventory.worktrees {
-        let pid = entry
-            .acquired_by
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| "-".to_string());
+    for entry in &state.entries {
+        let branch = if verbose || entry.status == WorktreeStatus::Acquired {
+            worktree_current_branch(&entry.path)
+        } else {
+            entry.branch.clone()
+        };
+        let owner = entry.owner.as_deref().unwrap_or("-");
         println!(
-            "{:<12} {:<12} {:<8} {}",
-            entry.name, entry.status, pid, entry.path
+            "{:<12} {:<12} {:<24} {}",
+            entry.name, entry.status, branch, owner
         );
     }
 
+    // Show next action
+    let next = state.next_action();
+    println!();
+    display_pool_next_action(&next);
+
     println!();
     Ok(())
+}
+
+fn display_pool_next_action(action: &PoolNextAction) {
+    match action {
+        PoolNextAction::WarmPool => {
+            output::action("Next: warm the pool");
+            println!("  gw worktree pool warm <count>");
+        }
+        PoolNextAction::Ready { available } => {
+            output::action(&format!("Ready: {} worktree(s) available", available));
+            println!("  gw worktree pool acquire");
+        }
+        PoolNextAction::Exhausted { acquired } => {
+            output::action(&format!(
+                "All {} worktree(s) acquired. Warm more or wait.",
+                acquired
+            ));
+            println!("  gw worktree pool warm <count>");
+        }
+        PoolNextAction::AllIdle { available } => {
+            output::action(&format!(
+                "All {} worktree(s) idle. Acquire or drain.",
+                available
+            ));
+            println!("  gw worktree pool acquire");
+            println!("  gw worktree pool drain");
+        }
+    }
 }
 
 /// `gw worktree pool drain [--force]`
@@ -360,15 +400,14 @@ pub fn drain(force: bool, verbose: bool) -> Result<()> {
     }
 
     let pool_dir = pool_dir()?;
-    let inv_path = inventory_path()?;
+    let wt_dir = worktrees_dir()?;
+    let acquired_dir = acquired_dir()?;
     // Resolve all paths upfront — the cwd might be inside a pool worktree
-    // that we're about to delete, so all git/fs calls after removal must
-    // not depend on cwd being valid.
+    // that we're about to delete.
     let repo_root = main_repo_root()?;
     let repo_root_str = repo_root.to_string_lossy().to_string();
-    let wt_dir = worktrees_dir()?;
 
-    if !inv_path.exists() {
+    if !wt_dir.exists() {
         return Err(GwError::PoolNotInitialized);
     }
 
@@ -376,17 +415,21 @@ pub fn drain(force: bool, verbose: bool) -> Result<()> {
     output::info("Draining worktree pool...");
 
     let _lock = PoolLock::acquire(&pool_dir)?;
-    let inventory = Inventory::load(&inv_path)?;
+    let state = PoolState::scan(&wt_dir, &acquired_dir)?;
+
+    if state.entries.is_empty() {
+        return Err(GwError::PoolNotInitialized);
+    }
 
     // Check for acquired worktrees
-    let acquired = inventory.count_by_status(&WorktreeStatus::Acquired);
+    let acquired = state.count_by_status(&WorktreeStatus::Acquired);
     if acquired > 0 && !force {
         return Err(GwError::PoolHasAcquiredWorktrees(acquired));
     }
 
-    let total = inventory.worktrees.len();
+    let total = state.entries.len();
 
-    for (i, entry) in inventory.worktrees.iter().enumerate() {
+    for (i, entry) in state.entries.iter().enumerate() {
         output::info(&format!(
             "[{}/{}] Removing {}...",
             i + 1,
@@ -394,10 +437,12 @@ pub fn drain(force: bool, verbose: bool) -> Result<()> {
             output::bold(&entry.name)
         ));
 
+        let path_str = entry.path.to_string_lossy().to_string();
+
         // Remove the worktree (run from repo_root so it works even if cwd is deleted)
         if let Err(e) = git::git_run_in_dir(
             &repo_root_str,
-            &["worktree", "remove", "--force", &entry.path],
+            &["worktree", "remove", "--force", &path_str],
             verbose,
         ) {
             output::warn(&format!("Failed to remove worktree {}: {e}", entry.name));
@@ -411,11 +456,17 @@ pub fn drain(force: bool, verbose: bool) -> Result<()> {
             output::warn(&format!("Failed to delete branch {}: {e}", entry.branch));
         }
 
+        // Remove acquired marker if present
+        let marker = acquired_dir.join(&entry.name);
+        let _ = std::fs::remove_file(&marker);
+
         output::success(&format!("[{}/{}] Removed {}", i + 1, total, entry.name));
     }
 
     // Clean up pool metadata
-    let _ = std::fs::remove_file(&inv_path);
+    if acquired_dir.exists() {
+        let _ = std::fs::remove_dir_all(&acquired_dir);
+    }
     let _ = std::fs::remove_file(pool_dir.join("pool.lock"));
 
     // Prune worktree references
