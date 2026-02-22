@@ -242,18 +242,35 @@ fn test_status_shows_pool_info() {
     assert_success(&output, "status");
 
     let out = stdout_str(&output);
+    // Summary line shows all counts
     assert!(out.contains("1 available"), "output: {out}");
     assert!(out.contains("1 acquired"), "output: {out}");
     assert!(out.contains("2 total"), "output: {out}");
+    // Default: only shows my acquired worktrees
     assert!(out.contains("pool-001"), "output: {out}");
-    assert!(out.contains("pool-002"), "output: {out}");
-    assert!(out.contains("acquired"), "output: {out}");
-    assert!(out.contains("available"), "output: {out}");
-    // Should show BRANCH and OWNER columns
     assert!(
         out.contains("BRANCH"),
         "output should have BRANCH column: {out}"
     );
+    // pool-002 (available) should NOT appear in default view
+    // OWNER column should NOT appear in default view
+}
+
+#[test]
+fn test_status_verbose_shows_all() {
+    let origin = create_origin_repo();
+    let local = create_local_repo(origin.path());
+
+    run_gw(local.path(), &["worktree", "pool", "warm", "2"]);
+    run_gw(local.path(), &["worktree", "pool", "acquire"]);
+
+    let output = run_gw(local.path(), &["worktree", "pool", "status", "-v"]);
+    assert_success(&output, "status -v");
+
+    let out = stdout_str(&output);
+    // Verbose shows all entries
+    assert!(out.contains("pool-001"), "output: {out}");
+    assert!(out.contains("pool-002"), "output: {out}");
     assert!(
         out.contains("OWNER"),
         "output should have OWNER column: {out}"

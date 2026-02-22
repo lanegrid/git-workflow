@@ -325,35 +325,58 @@ pub fn status(verbose: bool) -> Result<()> {
         return Err(GwError::PoolNotInitialized);
     }
 
+    let me = current_owner_name();
     let available = state.count_by_status(&WorktreeStatus::Available);
     let acquired = state.count_by_status(&WorktreeStatus::Acquired);
+    let mine: Vec<&PoolEntry> = state
+        .entries
+        .iter()
+        .filter(|e| e.owner.as_deref() == Some(&me))
+        .collect();
     let total = state.entries.len();
 
     println!();
     output::info(&format!(
-        "Pool: {} available, {} acquired, {} total",
+        "Pool: {} available, {} acquired ({} by you), {} total",
         output::bold(&available.to_string()),
         output::bold(&acquired.to_string()),
+        output::bold(&mine.len().to_string()),
         output::bold(&total.to_string()),
     ));
-    println!();
 
-    // Table header
-    let header = format!("{:<12} {:<12} {:<24} OWNER", "NAME", "STATUS", "BRANCH");
-    println!("{header}");
-    println!("{}", "-".repeat(72));
+    if !mine.is_empty() {
+        println!();
+        let header = format!("{:<12} {:<24}", "NAME", "BRANCH");
+        println!("{header}");
+        println!("{}", "-".repeat(36));
 
-    for entry in &state.entries {
-        let branch = if verbose || entry.status == WorktreeStatus::Acquired {
-            worktree_current_branch(&entry.path)
-        } else {
-            entry.branch.clone()
-        };
-        let owner = entry.owner.as_deref().unwrap_or("-");
-        println!(
-            "{:<12} {:<12} {:<24} {}",
-            entry.name, entry.status, branch, owner
-        );
+        for entry in &mine {
+            let branch = worktree_current_branch(&entry.path);
+            println!("{:<12} {}", entry.name, branch);
+        }
+    }
+
+    if verbose {
+        // --verbose: show all entries
+        println!();
+        output::info("All entries:");
+        println!();
+        let header = format!("{:<12} {:<12} {:<24} OWNER", "NAME", "STATUS", "BRANCH");
+        println!("{header}");
+        println!("{}", "-".repeat(72));
+
+        for entry in &state.entries {
+            let branch = if entry.status == WorktreeStatus::Acquired {
+                worktree_current_branch(&entry.path)
+            } else {
+                entry.branch.clone()
+            };
+            let owner = entry.owner.as_deref().unwrap_or("-");
+            println!(
+                "{:<12} {:<12} {:<24} {}",
+                entry.name, entry.status, branch, owner
+            );
+        }
     }
 
     // Show next action
