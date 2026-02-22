@@ -192,3 +192,8 @@ pub fn get_default_remote_branch() -> Result<String> {
 pub fn is_detached_head() -> bool {
     current_branch().map(|b| b == "HEAD").unwrap_or(false)
 }
+
+/// Get the top-level working directory of the repository
+pub fn repo_root() -> Result<PathBuf> {
+    git_output(&["rev-parse", "--show-toplevel"]).map(PathBuf::from)
+}

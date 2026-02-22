@@ -9,3 +9,4 @@ pub mod pause;
 pub mod status;
 pub mod sync;
 pub mod undo;
+pub mod worktree_pool;

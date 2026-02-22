@@ -49,4 +49,47 @@ pub enum Commands {
 
     /// Sync current branch after base PR is merged (update base to main, rebase, force push)
     Sync,
+
+    /// Manage worktrees
+    Worktree {
+        #[command(subcommand)]
+        command: WorktreeCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum WorktreeCommands {
+    /// Manage a pre-warmed worktree pool
+    Pool {
+        #[command(subcommand)]
+        command: PoolCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PoolCommands {
+    /// Pre-warm the pool with ready-to-use worktrees
+    Warm {
+        /// Target number of available worktrees in the pool
+        count: usize,
+    },
+
+    /// Acquire a worktree from the pool (prints path to stdout)
+    Acquire,
+
+    /// Release a worktree back to the pool
+    Release {
+        /// Worktree name (e.g., pool-001) or absolute path
+        identifier: String,
+    },
+
+    /// Show pool status
+    Status,
+
+    /// Remove all worktrees and clean up the pool
+    Drain {
+        /// Force drain even if worktrees are acquired
+        #[arg(long)]
+        force: bool,
+    },
 }

@@ -131,3 +131,28 @@ pub fn rebase(target: &str, verbose: bool) -> Result<()> {
 pub fn force_push_with_lease(branch: &str, verbose: bool) -> Result<()> {
     git_run(&["push", "--force-with-lease", "origin", branch], verbose)
 }
+
+/// Add a new worktree at the given path with a new branch from a start point
+pub fn worktree_add(path: &str, branch: &str, start_point: &str, verbose: bool) -> Result<()> {
+    git_run(
+        &["worktree", "add", "-b", branch, path, start_point],
+        verbose,
+    )
+}
+
+/// Remove a worktree (with --force)
+pub fn worktree_remove(path: &str, verbose: bool) -> Result<()> {
+    git_run(&["worktree", "remove", "--force", path], verbose)
+}
+
+/// Prune stale worktree entries
+pub fn worktree_prune(verbose: bool) -> Result<()> {
+    git_run(&["worktree", "prune"], verbose)
+}
+
+/// Execute a git command in a specific directory
+pub fn git_run_in_dir(dir: &str, args: &[&str], verbose: bool) -> Result<()> {
+    let mut full_args = vec!["-C", dir];
+    full_args.extend_from_slice(args);
+    git_run(&full_args, verbose)
+}

@@ -41,6 +41,21 @@ pub enum GwError {
     #[error("Cannot undo: no commits to undo (initial commit or empty history)")]
     NothingToUndo,
 
+    #[error("Worktree pool is not initialized. Run `gw worktree pool warm <n>` first.")]
+    PoolNotInitialized,
+
+    #[error("No available worktrees in the pool. Run `gw worktree pool warm <n>` to add more.")]
+    PoolExhausted,
+
+    #[error("Worktree not found in pool: {0}")]
+    PoolWorktreeNotFound(String),
+
+    #[error("Pool has {0} acquired worktree(s). Release them first or use --force.")]
+    PoolHasAcquiredWorktrees(usize),
+
+    #[error("Could not acquire pool lock within timeout")]
+    PoolLockTimeout,
+
     #[error("{0}")]
     Other(String),
 }
