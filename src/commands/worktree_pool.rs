@@ -157,44 +157,14 @@ fn ensure_excluded() -> Result<()> {
 
 /// Release a single pool worktree back to the pool.
 ///
-/// In addition to removing the acquire marker, this resets the worktree to a
-/// clean state (checkout home branch, reset to remote HEAD, clean untracked
-/// files, re-run setup hook). This "eager refresh" keeps acquire instant —
-/// the cost is paid once at release time rather than on every acquire.
-fn release_one(
-    entry: &PoolEntry,
-    acquired_dir: &Path,
-    repo_root: &Path,
-    default_remote: &str,
-    verbose: bool,
-) -> Result<()> {
-    let wt_path_str = entry.path.to_string_lossy().to_string();
-
-    output::info(&format!("Releasing {}...", output::bold(&entry.name)));
-
-    // Checkout home branch (the pool worktree's own branch)
-    git::git_run_in_dir(&wt_path_str, &["checkout", &entry.branch], verbose)?;
-
-    // Reset to the default remote head so it's fresh for next acquire
-    git::git_run_in_dir(&wt_path_str, &["reset", "--hard", default_remote], verbose)?;
-
-    // Clean untracked files
-    git::git_run_in_dir(&wt_path_str, &["clean", "-fd"], verbose)?;
-
-    // Run setup hook (if it fails, keep marker and warn)
-    if let Err(e) = run_setup_hook(repo_root, &wt_path_str, verbose) {
-        output::warn(&format!(
-            "Setup hook failed during release: {e}. Worktree remains acquired."
-        ));
-        return Ok(());
-    }
-
-    // Remove acquired marker
+/// Assumes `gw cleanup` was already run inside the worktree — the feature
+/// branch is deleted and the worktree is back on its home branch.
+/// Release just removes the acquire marker.
+fn release_one(entry: &PoolEntry, acquired_dir: &Path) -> Result<()> {
     let marker = acquired_dir.join(&entry.name);
     if marker.exists() {
         std::fs::remove_file(&marker)?;
     }
-
     output::success(&format!("{} released", entry.name));
     Ok(())
 }
@@ -353,7 +323,10 @@ pub fn acquire(_verbose: bool) -> Result<()> {
 }
 
 /// `gw worktree pool release [name]`
-pub fn release(name: Option<String>, verbose: bool) -> Result<()> {
+///
+/// Assumes `gw cleanup` was already run inside the worktree.
+/// Release just removes the acquire marker — no git operations, no network I/O.
+pub fn release(name: Option<String>, _verbose: bool) -> Result<()> {
     if !git::is_git_repo() {
         return Err(GwError::NotAGitRepository);
     }
@@ -362,15 +335,10 @@ pub fn release(name: Option<String>, verbose: bool) -> Result<()> {
     let wt_dir = worktrees_dir()?;
     let acquired_dir = acquired_dir()?;
     let prefix = pool_prefix()?;
-    let repo_root = main_repo_root()?;
 
     if !wt_dir.exists() {
         return Err(GwError::PoolNotInitialized);
     }
-
-    // Fetch BEFORE taking the lock — network I/O must not block other pool operations
-    git::fetch_prune(verbose)?;
-    let default_remote = git::get_default_remote_branch()?;
 
     let _lock = PoolLock::acquire(&pool_dir)?;
     let state = PoolState::scan(&wt_dir, &acquired_dir, &prefix)?;
@@ -379,11 +347,8 @@ pub fn release(name: Option<String>, verbose: bool) -> Result<()> {
         return Err(GwError::PoolNotInitialized);
     }
 
-    println!();
-
     match name {
         Some(ref n) => {
-            // Release a specific worktree by name
             let entry = state
                 .find_by_name_or_path(n)
                 .ok_or_else(|| GwError::PoolWorktreeNotFound(n.clone()))?;
@@ -392,10 +357,9 @@ pub fn release(name: Option<String>, verbose: bool) -> Result<()> {
                 return Err(GwError::PoolWorktreeNotAcquired(entry.name.clone()));
             }
 
-            release_one(entry, &acquired_dir, &repo_root, &default_remote, verbose)?;
+            release_one(entry, &acquired_dir)?;
         }
         None => {
-            // Release all acquired worktrees
             let acquired: Vec<_> = state
                 .entries
                 .iter()
@@ -406,10 +370,8 @@ pub fn release(name: Option<String>, verbose: bool) -> Result<()> {
                 return Err(GwError::PoolNoneAcquired);
             }
 
-            let total = acquired.len();
-            for (i, entry) in acquired.iter().enumerate() {
-                output::info(&format!("[{}/{}]", i + 1, total));
-                release_one(entry, &acquired_dir, &repo_root, &default_remote, verbose)?;
+            for entry in &acquired {
+                release_one(entry, &acquired_dir)?;
             }
         }
     }
