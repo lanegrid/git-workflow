@@ -111,11 +111,11 @@ fn test_warm_creates_worktrees() {
     assert!(local.path().join(".worktrees/pool-002").exists());
     assert!(local.path().join(".worktrees/pool-003").exists());
 
-    // Verify branches were created
-    let branches = run_git(local.path(), &["branch", "--list", "pool/*"]);
-    assert!(branches.contains("pool/pool-001"));
-    assert!(branches.contains("pool/pool-002"));
-    assert!(branches.contains("pool/pool-003"));
+    // Verify branches were created (now pool-NNN, not pool/pool-NNN)
+    let branches = run_git(local.path(), &["branch", "--list", "pool-*"]);
+    assert!(branches.contains("pool-001"), "branches: {branches}");
+    assert!(branches.contains("pool-002"), "branches: {branches}");
+    assert!(branches.contains("pool-003"), "branches: {branches}");
 }
 
 #[test]
@@ -169,7 +169,6 @@ fn test_acquire_prints_path_to_stdout() {
 
     // stdout should contain exactly the worktree path (plus newline)
     let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    // Normalize separators for Windows (backslash -> forward slash)
     let path_normalized = path.replace('\\', "/");
     assert!(
         path_normalized.ends_with(".worktrees/pool-001"),
@@ -184,6 +183,15 @@ fn test_acquire_prints_path_to_stdout() {
     let err = stderr_str(&output);
     assert!(err.contains("Acquired pool-001"), "stderr: {err}");
     assert!(err.contains("0 remaining"), "stderr: {err}");
+
+    // Acquire marker should exist
+    assert!(
+        local
+            .path()
+            .join(".git/worktree-pool/acquired/pool-001")
+            .exists(),
+        "Acquire marker should exist"
+    );
 }
 
 #[test]
@@ -220,113 +228,6 @@ fn test_acquire_fails_when_not_initialized() {
     assert!(err.contains("not initialized"), "stderr: {err}");
 }
 
-// --- release ---
-
-#[test]
-fn test_release_by_name() {
-    let origin = create_origin_repo();
-    let local = create_local_repo(origin.path());
-
-    run_gw(local.path(), &["worktree", "pool", "warm", "1"]);
-    run_gw(local.path(), &["worktree", "pool", "acquire"]);
-
-    let output = run_gw(local.path(), &["worktree", "pool", "release", "pool-001"]);
-    assert_success(&output, "release by name");
-
-    let out = stdout_str(&output);
-    assert!(out.contains("Released pool-001"), "output: {out}");
-}
-
-#[test]
-fn test_release_by_path() {
-    let origin = create_origin_repo();
-    let local = create_local_repo(origin.path());
-
-    run_gw(local.path(), &["worktree", "pool", "warm", "1"]);
-
-    let acquire_output = run_gw(local.path(), &["worktree", "pool", "acquire"]);
-    let path = String::from_utf8_lossy(&acquire_output.stdout)
-        .trim()
-        .to_string();
-
-    let output = run_gw(local.path(), &["worktree", "pool", "release", &path]);
-    assert_success(&output, "release by path");
-
-    let out = stdout_str(&output);
-    assert!(out.contains("Released pool-001"), "output: {out}");
-}
-
-#[test]
-fn test_release_auto_detect_from_cwd() {
-    let origin = create_origin_repo();
-    let local = create_local_repo(origin.path());
-
-    run_gw(local.path(), &["worktree", "pool", "warm", "1"]);
-
-    let acquire_output = run_gw(local.path(), &["worktree", "pool", "acquire"]);
-    let wt_path = String::from_utf8_lossy(&acquire_output.stdout)
-        .trim()
-        .to_string();
-
-    // Run release from inside the worktree with no identifier
-    let gw_path = env!("CARGO_BIN_EXE_gw");
-    let output = Command::new(gw_path)
-        .args(["worktree", "pool", "release"])
-        .current_dir(&wt_path)
-        .env("NO_COLOR", "1")
-        .output()
-        .expect("Failed to run gw");
-
-    assert_success(&output, "release auto-detect");
-
-    let out = stdout_str(&output);
-    assert!(out.contains("Released pool-001"), "output: {out}");
-}
-
-#[test]
-fn test_release_nonexistent_fails() {
-    let origin = create_origin_repo();
-    let local = create_local_repo(origin.path());
-
-    run_gw(local.path(), &["worktree", "pool", "warm", "1"]);
-
-    let output = run_gw(local.path(), &["worktree", "pool", "release", "pool-999"]);
-    assert!(!output.status.success());
-
-    let err = stderr_str(&output);
-    assert!(err.contains("not found"), "stderr: {err}");
-}
-
-// --- acquire/release cycle ---
-
-#[test]
-fn test_acquire_release_cycle() {
-    let origin = create_origin_repo();
-    let local = create_local_repo(origin.path());
-
-    run_gw(local.path(), &["worktree", "pool", "warm", "2"]);
-
-    // Acquire both
-    let out1 = run_gw(local.path(), &["worktree", "pool", "acquire"]);
-    assert_success(&out1, "acquire 1");
-    let path1 = String::from_utf8_lossy(&out1.stdout).trim().to_string();
-
-    let out2 = run_gw(local.path(), &["worktree", "pool", "acquire"]);
-    assert_success(&out2, "acquire 2");
-
-    // Pool should be exhausted
-    let out3 = run_gw(local.path(), &["worktree", "pool", "acquire"]);
-    assert!(!out3.status.success(), "Expected exhaustion");
-
-    // Release one
-    let output = run_gw(local.path(), &["worktree", "pool", "release", &path1]);
-    assert_success(&output, "release");
-
-    // Now we can acquire again
-    let out4 = run_gw(local.path(), &["worktree", "pool", "acquire"]);
-    assert_success(&out4, "re-acquire after release");
-}
-
 // --- status ---
 
 #[test]
@@ -341,13 +242,39 @@ fn test_status_shows_pool_info() {
     assert_success(&output, "status");
 
     let out = stdout_str(&output);
+    // Summary line shows all counts
     assert!(out.contains("1 available"), "output: {out}");
     assert!(out.contains("1 acquired"), "output: {out}");
     assert!(out.contains("2 total"), "output: {out}");
+    // Default: only shows my acquired worktrees
+    assert!(out.contains("pool-001"), "output: {out}");
+    assert!(
+        out.contains("BRANCH"),
+        "output should have BRANCH column: {out}"
+    );
+    // pool-002 (available) should NOT appear in default view
+    // OWNER column should NOT appear in default view
+}
+
+#[test]
+fn test_status_verbose_shows_all() {
+    let origin = create_origin_repo();
+    let local = create_local_repo(origin.path());
+
+    run_gw(local.path(), &["worktree", "pool", "warm", "2"]);
+    run_gw(local.path(), &["worktree", "pool", "acquire"]);
+
+    let output = run_gw(local.path(), &["worktree", "pool", "status", "-v"]);
+    assert_success(&output, "status -v");
+
+    let out = stdout_str(&output);
+    // Verbose shows all entries
     assert!(out.contains("pool-001"), "output: {out}");
     assert!(out.contains("pool-002"), "output: {out}");
-    assert!(out.contains("acquired"), "output: {out}");
-    assert!(out.contains("available"), "output: {out}");
+    assert!(
+        out.contains("OWNER"),
+        "output should have OWNER column: {out}"
+    );
 }
 
 #[test]
@@ -379,7 +306,7 @@ fn test_drain_removes_all_worktrees() {
     assert!(!local.path().join(".worktrees/pool-002").exists());
 
     // Pool branches should be gone
-    let branches = run_git(local.path(), &["branch", "--list", "pool/*"]);
+    let branches = run_git(local.path(), &["branch", "--list", "pool-*"]);
     assert!(branches.is_empty(), "branches still exist: {branches}");
 
     // Status should fail (pool gone)
@@ -465,26 +392,48 @@ fn test_full_pool_lifecycle() {
     assert!(out.contains("2 available"), "output: {out}");
     assert!(out.contains("1 acquired"), "output: {out}");
 
-    // 5. Make changes in the worktree (simulating agent work)
-    std::fs::write(Path::new(&path).join("agent_output.txt"), "work done").expect("write failed");
-
-    // 6. Release
-    let output = run_gw(local.path(), &["worktree", "pool", "release", &path]);
-    assert_success(&output, "release");
-
-    // 7. Verify worktree was reset (agent_output.txt should be gone)
+    // 5. Acquire marker should exist
     assert!(
-        !Path::new(&path).join("agent_output.txt").exists(),
-        "Release should have cleaned the worktree"
+        local
+            .path()
+            .join(".git/worktree-pool/acquired/pool-001")
+            .exists()
     );
 
-    // 8. Status shows 3 available again
-    let output = run_gw(local.path(), &["worktree", "pool", "status"]);
-    let out = stdout_str(&output);
-    assert!(out.contains("3 available"), "output: {out}");
-
-    // 9. Drain
-    let output = run_gw(local.path(), &["worktree", "pool", "drain"]);
+    // 6. Drain with force (since we have acquired worktrees)
+    let output = run_gw(local.path(), &["worktree", "pool", "drain", "--force"]);
     assert_success(&output, "drain");
-    assert!(out.contains("3"), "output: {out}");
+
+    let out = stdout_str(&output);
+    assert!(out.contains("Drained 3 worktree(s)"), "output: {out}");
+}
+
+// --- acquire/drain cycle ---
+
+#[test]
+fn test_acquire_drain_cycle() {
+    let origin = create_origin_repo();
+    let local = create_local_repo(origin.path());
+
+    run_gw(local.path(), &["worktree", "pool", "warm", "2"]);
+
+    // Acquire both
+    let out1 = run_gw(local.path(), &["worktree", "pool", "acquire"]);
+    assert_success(&out1, "acquire 1");
+
+    let out2 = run_gw(local.path(), &["worktree", "pool", "acquire"]);
+    assert_success(&out2, "acquire 2");
+
+    // Pool should be exhausted
+    let out3 = run_gw(local.path(), &["worktree", "pool", "acquire"]);
+    assert!(!out3.status.success(), "Expected exhaustion");
+
+    // Force drain
+    let output = run_gw(local.path(), &["worktree", "pool", "drain", "--force"]);
+    assert_success(&output, "drain --force");
+
+    // Re-warm and acquire again
+    run_gw(local.path(), &["worktree", "pool", "warm", "1"]);
+    let out4 = run_gw(local.path(), &["worktree", "pool", "acquire"]);
+    assert_success(&out4, "re-acquire after drain+warm");
 }

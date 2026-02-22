@@ -1,251 +1,271 @@
-//! Tests for pool inventory and lock
+//! Tests for pool filesystem detection and lock
+
+use std::fs;
+use std::time::Duration;
 
 use tempfile::TempDir;
 
-use super::inventory::{Inventory, PoolEntry, WorktreeStatus};
+use super::detect::{PoolNextAction, PoolState, WorktreeStatus};
 use super::lock::PoolLock;
 
-/// Create a test pool entry with the given name and status
-fn make_entry(name: &str, status: WorktreeStatus) -> PoolEntry {
-    PoolEntry {
-        name: name.to_string(),
-        path: format!("/tmp/test/.worktrees/{name}"),
-        branch: format!("pool/{name}"),
-        status,
-        created_at: 1700000000,
-        acquired_at: None,
-        acquired_by: None,
+/// Create pool directories and optional acquire markers for testing
+fn setup_pool(
+    dir: &TempDir,
+    names: &[&str],
+    acquired: &[(&str, &str)],
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let wt_dir = dir.path().join(".worktrees");
+    let acq_dir = dir.path().join("acquired");
+    fs::create_dir_all(&wt_dir).unwrap();
+    fs::create_dir_all(&acq_dir).unwrap();
+    for name in names {
+        fs::create_dir_all(wt_dir.join(name)).unwrap();
     }
+    for (name, owner) in acquired {
+        fs::write(acq_dir.join(name), owner).unwrap();
+    }
+    (wt_dir, acq_dir)
 }
 
-// --- Inventory: new / default ---
+// --- PoolState::scan ---
 
 #[test]
-fn test_new_inventory_is_empty() {
-    let inv = Inventory::new();
-    assert_eq!(inv.version, 1);
-    assert!(inv.worktrees.is_empty());
-}
-
-#[test]
-fn test_default_equals_new() {
-    let a = Inventory::new();
-    let b = Inventory::default();
-    assert_eq!(a.version, b.version);
-    assert_eq!(a.worktrees.len(), b.worktrees.len());
-}
-
-// --- Inventory: save / load round-trip ---
-
-#[test]
-fn test_save_and_load_round_trip() {
+fn test_scan_empty_directory() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("inventory.json");
+    let wt_dir = dir.path().join(".worktrees");
+    let acq_dir = dir.path().join("acquired");
+    fs::create_dir_all(&wt_dir).unwrap();
+    fs::create_dir_all(&acq_dir).unwrap();
 
-    let mut inv = Inventory::new();
-    inv.worktrees
-        .push(make_entry("pool-001", WorktreeStatus::Available));
-    inv.worktrees
-        .push(make_entry("pool-002", WorktreeStatus::Acquired));
-    inv.save(&path).unwrap();
-
-    let loaded = Inventory::load(&path).unwrap();
-    assert_eq!(loaded.version, 1);
-    assert_eq!(loaded.worktrees.len(), 2);
-    assert_eq!(loaded.worktrees[0].name, "pool-001");
-    assert_eq!(loaded.worktrees[0].status, WorktreeStatus::Available);
-    assert_eq!(loaded.worktrees[1].name, "pool-002");
-    assert_eq!(loaded.worktrees[1].status, WorktreeStatus::Acquired);
+    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    assert!(state.entries.is_empty());
 }
 
 #[test]
-fn test_load_nonexistent_returns_empty() {
+fn test_scan_nonexistent_directory() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("does-not-exist.json");
+    let wt_dir = dir.path().join(".worktrees");
+    let acq_dir = dir.path().join("acquired");
 
-    let inv = Inventory::load(&path).unwrap();
-    assert!(inv.worktrees.is_empty());
+    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    assert!(state.entries.is_empty());
 }
 
 #[test]
-fn test_load_invalid_json_returns_error() {
+fn test_scan_finds_pool_directories_sorted() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("bad.json");
-    std::fs::write(&path, "not valid json").unwrap();
+    let (wt_dir, acq_dir) = setup_pool(&dir, &["pool-003", "pool-001", "pool-002"], &[]);
 
-    let result = Inventory::load(&path);
-    assert!(result.is_err());
+    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    assert_eq!(state.entries.len(), 3);
+    assert_eq!(state.entries[0].name, "pool-001");
+    assert_eq!(state.entries[1].name, "pool-002");
+    assert_eq!(state.entries[2].name, "pool-003");
 }
 
-// --- Inventory: acquired_at / acquired_by serialization ---
-
 #[test]
-fn test_acquired_fields_round_trip() {
+fn test_scan_ignores_non_pool_directories() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("inventory.json");
+    let wt_dir = dir.path().join(".worktrees");
+    let acq_dir = dir.path().join("acquired");
+    fs::create_dir_all(&wt_dir).unwrap();
+    fs::create_dir_all(wt_dir.join("pool-001")).unwrap();
+    fs::create_dir_all(wt_dir.join("feature-branch")).unwrap();
+    fs::create_dir_all(wt_dir.join("my-worktree")).unwrap();
+    fs::create_dir_all(&acq_dir).unwrap();
 
-    let mut inv = Inventory::new();
-    let mut entry = make_entry("pool-001", WorktreeStatus::Acquired);
-    entry.acquired_at = Some(1700000099);
-    entry.acquired_by = Some(12345);
-    inv.worktrees.push(entry);
-    inv.save(&path).unwrap();
-
-    let loaded = Inventory::load(&path).unwrap();
-    assert_eq!(loaded.worktrees[0].acquired_at, Some(1700000099));
-    assert_eq!(loaded.worktrees[0].acquired_by, Some(12345));
+    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    assert_eq!(state.entries.len(), 1);
+    assert_eq!(state.entries[0].name, "pool-001");
 }
 
 #[test]
-fn test_null_acquired_fields_round_trip() {
+fn test_scan_detects_acquired_from_marker() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("inventory.json");
+    let (wt_dir, acq_dir) = setup_pool(&dir, &["pool-001", "pool-002"], &[("pool-001", "web-2")]);
 
-    let mut inv = Inventory::new();
-    inv.worktrees
-        .push(make_entry("pool-001", WorktreeStatus::Available));
-    inv.save(&path).unwrap();
-
-    let loaded = Inventory::load(&path).unwrap();
-    assert_eq!(loaded.worktrees[0].acquired_at, None);
-    assert_eq!(loaded.worktrees[0].acquired_by, None);
+    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    assert_eq!(state.entries[0].status, WorktreeStatus::Acquired);
+    assert_eq!(state.entries[0].owner.as_deref(), Some("web-2"));
+    assert_eq!(state.entries[1].status, WorktreeStatus::Available);
+    assert_eq!(state.entries[1].owner, None);
 }
-
-// --- Inventory: count_by_status ---
 
 #[test]
-fn test_count_by_status_empty() {
-    let inv = Inventory::new();
-    assert_eq!(inv.count_by_status(&WorktreeStatus::Available), 0);
-    assert_eq!(inv.count_by_status(&WorktreeStatus::Acquired), 0);
+fn test_scan_available_when_no_marker() {
+    let dir = TempDir::new().unwrap();
+    let (wt_dir, acq_dir) = setup_pool(&dir, &["pool-001"], &[]);
+
+    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    assert_eq!(state.entries[0].status, WorktreeStatus::Available);
 }
+
+// --- count_by_status ---
 
 #[test]
 fn test_count_by_status_mixed() {
-    let mut inv = Inventory::new();
-    inv.worktrees
-        .push(make_entry("pool-001", WorktreeStatus::Available));
-    inv.worktrees
-        .push(make_entry("pool-002", WorktreeStatus::Acquired));
-    inv.worktrees
-        .push(make_entry("pool-003", WorktreeStatus::Available));
+    let dir = TempDir::new().unwrap();
+    let (wt_dir, acq_dir) = setup_pool(
+        &dir,
+        &["pool-001", "pool-002", "pool-003"],
+        &[("pool-001", "web-2"), ("pool-003", "web-3")],
+    );
 
-    assert_eq!(inv.count_by_status(&WorktreeStatus::Available), 2);
-    assert_eq!(inv.count_by_status(&WorktreeStatus::Acquired), 1);
+    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    assert_eq!(state.count_by_status(&WorktreeStatus::Available), 1);
+    assert_eq!(state.count_by_status(&WorktreeStatus::Acquired), 2);
 }
 
-// --- Inventory: next_name ---
-
-#[test]
-fn test_next_name_empty() {
-    let inv = Inventory::new();
-    assert_eq!(inv.next_name(), "pool-001");
-}
-
-#[test]
-fn test_next_name_sequential() {
-    let mut inv = Inventory::new();
-    inv.worktrees
-        .push(make_entry("pool-001", WorktreeStatus::Available));
-    inv.worktrees
-        .push(make_entry("pool-002", WorktreeStatus::Available));
-    assert_eq!(inv.next_name(), "pool-003");
-}
-
-#[test]
-fn test_next_name_with_gap() {
-    let mut inv = Inventory::new();
-    inv.worktrees
-        .push(make_entry("pool-001", WorktreeStatus::Available));
-    inv.worktrees
-        .push(make_entry("pool-005", WorktreeStatus::Available));
-    // Should use max+1, not fill gaps
-    assert_eq!(inv.next_name(), "pool-006");
-}
-
-// --- Inventory: find_available ---
-
-#[test]
-fn test_find_available_none() {
-    let mut inv = Inventory::new();
-    inv.worktrees
-        .push(make_entry("pool-001", WorktreeStatus::Acquired));
-    assert_eq!(inv.find_available(), None);
-}
+// --- find_available ---
 
 #[test]
 fn test_find_available_returns_first() {
-    let mut inv = Inventory::new();
-    inv.worktrees
-        .push(make_entry("pool-001", WorktreeStatus::Acquired));
-    inv.worktrees
-        .push(make_entry("pool-002", WorktreeStatus::Available));
-    inv.worktrees
-        .push(make_entry("pool-003", WorktreeStatus::Available));
-    assert_eq!(inv.find_available(), Some(1));
+    let dir = TempDir::new().unwrap();
+    let (wt_dir, acq_dir) = setup_pool(
+        &dir,
+        &["pool-001", "pool-002", "pool-003"],
+        &[("pool-001", "web-2")],
+    );
+
+    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    let found = state.find_available().unwrap();
+    assert_eq!(found.name, "pool-002");
 }
 
 #[test]
-fn test_find_available_empty_inventory() {
-    let inv = Inventory::new();
-    assert_eq!(inv.find_available(), None);
+fn test_find_available_none_when_all_acquired() {
+    let dir = TempDir::new().unwrap();
+    let (wt_dir, acq_dir) = setup_pool(
+        &dir,
+        &["pool-001", "pool-002"],
+        &[("pool-001", "web-2"), ("pool-002", "web-3")],
+    );
+
+    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    assert!(state.find_available().is_none());
 }
 
-// --- Inventory: find_by_name_or_path ---
+// --- find_by_name_or_path ---
 
 #[test]
 fn test_find_by_name() {
-    let mut inv = Inventory::new();
-    inv.worktrees
-        .push(make_entry("pool-001", WorktreeStatus::Available));
-    inv.worktrees
-        .push(make_entry("pool-002", WorktreeStatus::Acquired));
+    let dir = TempDir::new().unwrap();
+    let (wt_dir, acq_dir) = setup_pool(&dir, &["pool-001", "pool-002"], &[]);
 
-    assert_eq!(inv.find_by_name_or_path("pool-002"), Some(1));
+    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    let found = state.find_by_name_or_path("pool-002").unwrap();
+    assert_eq!(found.name, "pool-002");
 }
 
 #[test]
 fn test_find_by_path() {
-    let mut inv = Inventory::new();
-    inv.worktrees
-        .push(make_entry("pool-001", WorktreeStatus::Available));
+    let dir = TempDir::new().unwrap();
+    let (wt_dir, acq_dir) = setup_pool(&dir, &["pool-001"], &[]);
 
-    assert_eq!(
-        inv.find_by_name_or_path("/tmp/test/.worktrees/pool-001"),
-        Some(0)
-    );
+    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    let path_str = wt_dir.join("pool-001").to_string_lossy().to_string();
+    let found = state.find_by_name_or_path(&path_str).unwrap();
+    assert_eq!(found.name, "pool-001");
 }
 
 #[test]
 fn test_find_nonexistent() {
-    let mut inv = Inventory::new();
-    inv.worktrees
-        .push(make_entry("pool-001", WorktreeStatus::Available));
+    let dir = TempDir::new().unwrap();
+    let (wt_dir, acq_dir) = setup_pool(&dir, &["pool-001"], &[]);
 
-    assert_eq!(inv.find_by_name_or_path("pool-999"), None);
-    assert_eq!(inv.find_by_name_or_path("/wrong/path"), None);
+    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    assert!(state.find_by_name_or_path("pool-999").is_none());
 }
 
-// --- WorktreeStatus: Display ---
+// --- next_name ---
+
+#[test]
+fn test_next_name_empty() {
+    let dir = TempDir::new().unwrap();
+    let wt_dir = dir.path().join(".worktrees");
+    let acq_dir = dir.path().join("acquired");
+
+    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    assert_eq!(state.next_name(), "pool-001");
+}
+
+#[test]
+fn test_next_name_sequential() {
+    let dir = TempDir::new().unwrap();
+    let (wt_dir, acq_dir) = setup_pool(&dir, &["pool-001", "pool-002", "pool-003"], &[]);
+
+    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    assert_eq!(state.next_name(), "pool-004");
+}
+
+#[test]
+fn test_next_name_with_gap() {
+    let dir = TempDir::new().unwrap();
+    let (wt_dir, acq_dir) = setup_pool(&dir, &["pool-001", "pool-005"], &[]);
+
+    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    assert_eq!(state.next_name(), "pool-006");
+}
+
+// --- PoolNextAction ---
+
+#[test]
+fn test_next_action_warm_pool_when_empty() {
+    let dir = TempDir::new().unwrap();
+    let wt_dir = dir.path().join(".worktrees");
+    let acq_dir = dir.path().join("acquired");
+
+    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    assert_eq!(state.next_action(), PoolNextAction::WarmPool);
+}
+
+#[test]
+fn test_next_action_ready_when_mixed() {
+    let dir = TempDir::new().unwrap();
+    let (wt_dir, acq_dir) = setup_pool(
+        &dir,
+        &["pool-001", "pool-002", "pool-003"],
+        &[("pool-001", "web-2")],
+    );
+
+    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    assert_eq!(state.next_action(), PoolNextAction::Ready { available: 2 });
+}
+
+#[test]
+fn test_next_action_exhausted_when_all_acquired() {
+    let dir = TempDir::new().unwrap();
+    let (wt_dir, acq_dir) = setup_pool(
+        &dir,
+        &["pool-001", "pool-002"],
+        &[("pool-001", "web-2"), ("pool-002", "web-3")],
+    );
+
+    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    assert_eq!(
+        state.next_action(),
+        PoolNextAction::Exhausted { acquired: 2 }
+    );
+}
+
+#[test]
+fn test_next_action_all_idle_when_none_acquired() {
+    let dir = TempDir::new().unwrap();
+    let (wt_dir, acq_dir) = setup_pool(&dir, &["pool-001", "pool-002"], &[]);
+
+    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    assert_eq!(
+        state.next_action(),
+        PoolNextAction::AllIdle { available: 2 }
+    );
+}
+
+// --- WorktreeStatus::Display ---
 
 #[test]
 fn test_status_display() {
     assert_eq!(WorktreeStatus::Available.to_string(), "available");
     assert_eq!(WorktreeStatus::Acquired.to_string(), "acquired");
-}
-
-// --- WorktreeStatus: serde ---
-
-#[test]
-fn test_status_serde_round_trip() {
-    let json = serde_json::to_string(&WorktreeStatus::Available).unwrap();
-    assert_eq!(json, "\"available\"");
-
-    let json = serde_json::to_string(&WorktreeStatus::Acquired).unwrap();
-    assert_eq!(json, "\"acquired\"");
-
-    let parsed: WorktreeStatus = serde_json::from_str("\"available\"").unwrap();
-    assert_eq!(parsed, WorktreeStatus::Available);
 }
 
 // --- PoolLock ---
@@ -254,9 +274,9 @@ fn test_status_serde_round_trip() {
 fn test_lock_creates_dir_and_file() {
     let dir = TempDir::new().unwrap();
     let pool_dir = dir.path().join("pool");
-    assert!(!pool_dir.exists());
 
     let _lock = PoolLock::acquire(&pool_dir).unwrap();
+
     assert!(pool_dir.exists());
     assert!(pool_dir.join("pool.lock").exists());
 }
@@ -268,22 +288,20 @@ fn test_lock_released_on_drop() {
 
     {
         let _lock = PoolLock::acquire(&pool_dir).unwrap();
-        // Lock is held here
-    }
-    // Lock should be released after drop
+    } // lock dropped here
 
-    // Should be able to re-acquire
-    let _lock2 = PoolLock::acquire(&pool_dir).unwrap();
+    // Should be able to acquire again
+    let _lock = PoolLock::acquire(&pool_dir).unwrap();
 }
 
 #[test]
-fn test_lock_exclusive() {
+fn test_lock_exclusive_times_out() {
     let dir = TempDir::new().unwrap();
     let pool_dir = dir.path().join("pool");
 
-    let _lock1 = PoolLock::acquire(&pool_dir).unwrap();
+    let _lock = PoolLock::acquire(&pool_dir).unwrap();
 
-    // Second acquire should fail (try_lock_exclusive returns error)
-    let result = PoolLock::acquire(&pool_dir);
+    // Second acquire with short timeout should fail
+    let result = PoolLock::acquire_with_timeout(&pool_dir, Duration::from_millis(100));
     assert!(result.is_err());
 }

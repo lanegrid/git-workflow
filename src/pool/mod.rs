@@ -1,10 +1,10 @@
 //! Worktree pool management
 
-pub mod inventory;
+pub mod detect;
 pub mod lock;
 
 #[cfg(test)]
 mod tests;
 
-pub use inventory::{Inventory, PoolEntry, WorktreeStatus};
+pub use detect::{PoolEntry, PoolNextAction, PoolState, WorktreeStatus};
 pub use lock::PoolLock;

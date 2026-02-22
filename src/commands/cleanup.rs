@@ -123,6 +123,12 @@ pub fn run(branch_name: Option<String>, verbose: bool) -> Result<()> {
         output::action("git stash list");
     }
 
+    // Pool worktree auto-release: if we're inside a pool worktree,
+    // clean untracked files, remove the acquire marker, and run setup hook
+    if let Some(pool_name) = super::worktree_pool::detect_pool_worktree() {
+        super::worktree_pool::pool_release_after_cleanup(&pool_name, verbose)?;
+    }
+
     output::ready("Cleanup complete", home_branch);
     output::hints(&["mise run git:new feature/your-feature  # Create new branch"]);
 
