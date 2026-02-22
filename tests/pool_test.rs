@@ -169,8 +169,10 @@ fn test_acquire_prints_path_to_stdout() {
 
     // stdout should contain exactly the worktree path (plus newline)
     let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // Normalize separators for Windows (backslash -> forward slash)
+    let path_normalized = path.replace('\\', "/");
     assert!(
-        path.ends_with(".worktrees/pool-001"),
+        path_normalized.ends_with(".worktrees/pool-001"),
         "Expected worktree path, got: {path}"
     );
     assert!(
