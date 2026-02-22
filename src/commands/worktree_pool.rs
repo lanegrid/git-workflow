@@ -101,27 +101,25 @@ fn worktree_current_branch(path: &Path) -> String {
         .unwrap_or_else(|| "???".to_string())
 }
 
-/// Ensure `.worktrees/` is listed in the repo's `.gitignore`.
-/// Appends the entry if missing; creates the file if it doesn't exist.
-fn ensure_gitignore(repo_root: &Path) -> Result<()> {
-    let gitignore = repo_root.join(".gitignore");
-    let entry = ".worktrees/";
+/// Ensure `.worktrees/` is excluded via `.git/info/exclude`.
+/// This is local-only and never pollutes `.gitignore` or the working tree.
+fn ensure_excluded() -> Result<()> {
+    let common = git::git_common_dir()?;
+    let exclude_path = common.join("info").join("exclude");
+    let entry = "/.worktrees/";
 
-    if gitignore.exists() {
-        let content = std::fs::read_to_string(&gitignore)?;
+    if exclude_path.exists() {
+        let content = std::fs::read_to_string(&exclude_path)?;
         if content.lines().any(|line| line.trim() == entry) {
             return Ok(());
         }
-        // Append with a preceding newline if the file doesn't end with one
         let prefix = if content.ends_with('\n') { "" } else { "\n" };
-        std::fs::write(&gitignore, format!("{content}{prefix}{entry}\n"))?;
+        std::fs::write(&exclude_path, format!("{content}{prefix}{entry}\n"))?;
     } else {
-        std::fs::write(&gitignore, format!("{entry}\n"))?;
+        std::fs::create_dir_all(common.join("info"))?;
+        std::fs::write(&exclude_path, format!("{entry}\n"))?;
     }
 
-    output::warn(&format!(
-        "Added {entry} to .gitignore — please commit this change"
-    ));
     Ok(())
 }
 
@@ -216,8 +214,8 @@ pub fn warm(count: usize, verbose: bool) -> Result<()> {
 
     let to_create = count - available;
 
-    // Ensure .worktrees/ is in .gitignore
-    ensure_gitignore(&repo_root)?;
+    // Ensure .worktrees/ is excluded locally (via .git/info/exclude)
+    ensure_excluded()?;
 
     // Fetch once
     output::info("Fetching from origin...");

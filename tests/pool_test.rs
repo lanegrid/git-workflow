@@ -117,17 +117,23 @@ fn test_warm_creates_worktrees() {
     assert!(branches.contains("pool-002"), "branches: {branches}");
     assert!(branches.contains("pool-003"), "branches: {branches}");
 
-    // Verify .worktrees/ was added to .gitignore
-    let gitignore =
-        std::fs::read_to_string(local.path().join(".gitignore")).expect(".gitignore should exist");
+    // Verify .worktrees/ was added to .git/info/exclude (not .gitignore)
+    let exclude = std::fs::read_to_string(local.path().join(".git/info/exclude"))
+        .expect(".git/info/exclude should exist");
     assert!(
-        gitignore.contains(".worktrees/"),
-        ".gitignore should contain .worktrees/: {gitignore}"
+        exclude.contains(".worktrees/"),
+        ".git/info/exclude should contain .worktrees/: {exclude}"
+    );
+    // .gitignore should NOT be modified
+    let gitignore = std::fs::read_to_string(local.path().join(".gitignore")).unwrap_or_default();
+    assert!(
+        !gitignore.contains(".worktrees/"),
+        ".gitignore should not contain .worktrees/: {gitignore}"
     );
 }
 
 #[test]
-fn test_warm_gitignore_idempotent() {
+fn test_warm_exclude_idempotent() {
     let origin = create_origin_repo();
     let local = create_local_repo(origin.path());
 
@@ -135,14 +141,14 @@ fn test_warm_gitignore_idempotent() {
     run_gw(local.path(), &["worktree", "pool", "warm", "1"]);
     run_gw(local.path(), &["worktree", "pool", "warm", "2"]);
 
-    // .worktrees/ should appear exactly once in .gitignore
-    let gitignore =
-        std::fs::read_to_string(local.path().join(".gitignore")).expect(".gitignore should exist");
-    let count = gitignore
+    // .worktrees/ should appear exactly once in .git/info/exclude
+    let exclude = std::fs::read_to_string(local.path().join(".git/info/exclude"))
+        .expect(".git/info/exclude should exist");
+    let count = exclude
         .lines()
-        .filter(|l| l.trim() == ".worktrees/")
+        .filter(|l| l.trim() == "/.worktrees/")
         .count();
-    assert_eq!(count, 1, ".worktrees/ should appear once: {gitignore}");
+    assert_eq!(count, 1, "/.worktrees/ should appear once: {exclude}");
 }
 
 #[test]
