@@ -157,14 +157,26 @@ fn ensure_excluded() -> Result<()> {
 
 /// Release a single pool worktree back to the pool.
 ///
-/// Assumes `gw cleanup` was already run inside the worktree — the feature
-/// branch is deleted and the worktree is back on its home branch.
-/// Release just removes the acquire marker.
-fn release_one(entry: &PoolEntry, acquired_dir: &Path) -> Result<()> {
+/// Runs `gw home` equivalent (checkout home branch + pull) to ensure the
+/// worktree is clean and synced, then removes the acquire marker.
+fn release_one(
+    entry: &PoolEntry,
+    acquired_dir: &Path,
+    default_branch: &str,
+    verbose: bool,
+) -> Result<()> {
+    let wt_path = entry.path.to_string_lossy().to_string();
+
+    // gw home: return to home branch and sync
+    git::git_run_in_dir(&wt_path, &["checkout", &entry.branch], verbose)?;
+    git::git_run_in_dir(&wt_path, &["pull", "origin", default_branch], verbose)?;
+
+    // Remove acquired marker
     let marker = acquired_dir.join(&entry.name);
     if marker.exists() {
         std::fs::remove_file(&marker)?;
     }
+
     output::success(&format!("{} released", entry.name));
     Ok(())
 }
@@ -324,9 +336,8 @@ pub fn acquire(_verbose: bool) -> Result<()> {
 
 /// `gw worktree pool release [name]`
 ///
-/// Assumes `gw cleanup` was already run inside the worktree.
-/// Release just removes the acquire marker — no git operations, no network I/O.
-pub fn release(name: Option<String>, _verbose: bool) -> Result<()> {
+/// For each released worktree: checkout home branch, pull latest, remove marker.
+pub fn release(name: Option<String>, verbose: bool) -> Result<()> {
     if !git::is_git_repo() {
         return Err(GwError::NotAGitRepository);
     }
@@ -347,6 +358,11 @@ pub fn release(name: Option<String>, _verbose: bool) -> Result<()> {
         return Err(GwError::PoolNotInitialized);
     }
 
+    // Fetch once — shared across all worktrees
+    git::fetch_prune(verbose)?;
+    let default_remote = git::get_default_remote_branch()?;
+    let default_branch = default_remote.strip_prefix("origin/").unwrap_or("main");
+
     match name {
         Some(ref n) => {
             let entry = state
@@ -357,7 +373,7 @@ pub fn release(name: Option<String>, _verbose: bool) -> Result<()> {
                 return Err(GwError::PoolWorktreeNotAcquired(entry.name.clone()));
             }
 
-            release_one(entry, &acquired_dir)?;
+            release_one(entry, &acquired_dir, default_branch, verbose)?;
         }
         None => {
             let acquired: Vec<_> = state
@@ -371,7 +387,7 @@ pub fn release(name: Option<String>, _verbose: bool) -> Result<()> {
             }
 
             for entry in &acquired {
-                release_one(entry, &acquired_dir)?;
+                release_one(entry, &acquired_dir, default_branch, verbose)?;
             }
         }
     }
