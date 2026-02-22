@@ -464,7 +464,7 @@ pub fn status(verbose: bool) -> Result<()> {
 
     if acquired > 0 {
         println!();
-        let header = format!("{:<24} {:<24}", "NAME", "BRANCH");
+        let header = format!("{:<24} {}", "NAME", "BRANCH");
         println!("{header}");
         println!("{}", "-".repeat(48));
 
@@ -473,7 +473,13 @@ pub fn status(verbose: bool) -> Result<()> {
                 continue;
             }
             let branch = worktree_current_branch(&entry.path);
-            println!("{:<24} {}", entry.name, branch);
+            let branch_display = if branch == entry.name {
+                "(idle)".to_string()
+            } else {
+                branch
+            };
+            println!("{:<24} {}", entry.name, branch_display);
+            println!("    {}", entry.path.display());
         }
     }
 
@@ -514,16 +520,14 @@ fn display_pool_next_action(action: &PoolNextAction) {
         PoolNextAction::Ready { available } => {
             output::action(&format!("Ready: {} worktree(s) available", available));
             println!("  gw worktree pool acquire");
-            println!("  gw worktree pool release          # release all acquired");
-            println!("  gw worktree pool release <name>   # release specific");
+            println!("  gw worktree pool release [name]");
         }
         PoolNextAction::Exhausted { acquired } => {
             output::action(&format!(
                 "All {} worktree(s) acquired. Release or warm more.",
                 acquired
             ));
-            println!("  gw worktree pool release          # release all acquired");
-            println!("  gw worktree pool release <name>   # release specific");
+            println!("  gw worktree pool release [name]");
             println!("  gw worktree pool warm <count>");
         }
         PoolNextAction::AllIdle { available } => {
