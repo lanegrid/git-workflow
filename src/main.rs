@@ -4,7 +4,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use git_workflow::cli::{Cli, Commands};
+use git_workflow::cli::{Cli, Commands, PoolCommands, WorktreeCommands};
 use git_workflow::commands;
 use git_workflow::output;
 
@@ -20,6 +20,17 @@ fn main() -> ExitCode {
         Commands::Abandon => commands::abandon::run(cli.verbose),
         Commands::Undo => commands::undo::run(cli.verbose),
         Commands::Sync => commands::sync::run(cli.verbose),
+        Commands::Worktree { command } => match command {
+            WorktreeCommands::Pool { command } => match command {
+                PoolCommands::Warm { count } => commands::worktree_pool::warm(count, cli.verbose),
+                PoolCommands::Acquire => commands::worktree_pool::acquire(cli.verbose),
+                PoolCommands::Release { identifier } => {
+                    commands::worktree_pool::release(identifier.as_deref(), cli.verbose)
+                }
+                PoolCommands::Status => commands::worktree_pool::status(),
+                PoolCommands::Drain { force } => commands::worktree_pool::drain(force, cli.verbose),
+            },
+        },
     };
 
     match result {

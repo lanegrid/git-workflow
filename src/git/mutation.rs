@@ -131,3 +131,43 @@ pub fn rebase(target: &str, verbose: bool) -> Result<()> {
 pub fn force_push_with_lease(branch: &str, verbose: bool) -> Result<()> {
     git_run(&["push", "--force-with-lease", "origin", branch], verbose)
 }
+
+/// Add a new worktree at the given path with a new branch from a start point
+pub fn worktree_add(path: &str, branch: &str, start_point: &str, verbose: bool) -> Result<()> {
+    git_run(
+        &["worktree", "add", "-b", branch, path, start_point],
+        verbose,
+    )
+}
+
+/// Remove a worktree (with --force)
+pub fn worktree_remove(path: &str, verbose: bool) -> Result<()> {
+    git_run(&["worktree", "remove", "--force", path], verbose)
+}
+
+/// Prune stale worktree entries
+pub fn worktree_prune(verbose: bool) -> Result<()> {
+    git_run(&["worktree", "prune"], verbose)
+}
+
+/// Execute a git command in a specific directory.
+/// Sets the process working directory (not just `git -C`) so it works
+/// even if the caller's cwd has been deleted.
+pub fn git_run_in_dir(dir: &str, args: &[&str], verbose: bool) -> Result<()> {
+    if verbose {
+        output::action(&format!("git -C {} {}", dir, args.join(" ")));
+    }
+
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .map_err(|e| GwError::GitCommandFailed(format!("Failed to execute git: {e}")))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(GwError::GitCommandFailed(stderr))
+    }
+}

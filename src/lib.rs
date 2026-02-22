@@ -9,6 +9,7 @@ pub mod error;
 pub mod git;
 pub mod github;
 pub mod output;
+pub mod pool;
 pub mod state;
 
 pub use error::{GwError, Result};

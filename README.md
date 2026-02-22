@@ -112,6 +112,45 @@ cd ../feature-x
 git-workflow status  # Home: feature-x
 ```
 
+### Worktree Pool
+
+Pre-warm a pool of ready-to-use worktrees for AI agent teams. Instead of each agent spending 1-2 minutes on `git worktree add` + project setup, they acquire a pre-built worktree in ~10ms.
+
+```bash
+# Pre-create 5 worktrees from origin/main
+gw worktree pool warm 5
+
+# Agent acquires a worktree (prints path to stdout)
+path=$(gw worktree pool acquire)
+cd "$path" && # do work...
+
+# Agent releases when done (resets to clean state)
+gw worktree pool release          # auto-detects from cwd
+gw worktree pool release pool-001 # or by name
+
+# Check pool state
+gw worktree pool status
+# Pool: 4 available, 1 acquired, 5 total
+#
+# NAME         STATUS       PID      PATH
+# pool-001     acquired 12345   /path/.worktrees/pool-001
+# pool-002     available -       /path/.worktrees/pool-002
+# ...
+
+# Tear down everything
+gw worktree pool drain
+```
+
+| Command | Description |
+|---------|-------------|
+| `gw worktree pool warm <n>` | Pre-create N available worktrees |
+| `gw worktree pool acquire` | Claim a worktree (prints path to stdout) |
+| `gw worktree pool release [id]` | Reset and return worktree to pool |
+| `gw worktree pool status` | Show pool state |
+| `gw worktree pool drain [--force]` | Remove all pool worktrees |
+
+**Setup hook**: Place an executable at `.gw/setup` to run project-specific initialization (e.g., `npm install`) on each worktree. It receives the worktree path as `$1`.
+
 ## Prerequisites
 
 - Git
