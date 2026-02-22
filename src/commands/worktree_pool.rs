@@ -155,54 +155,29 @@ fn ensure_excluded() -> Result<()> {
     Ok(())
 }
 
-/// Check if the current directory is inside a pool worktree.
-/// Returns `(pool_name, leader_root)` if so.
-///
-/// Detection: the worktree toplevel's parent is `.worktrees/`, and
-/// the directory name contains "-pool-".
-pub fn detect_pool_worktree() -> Option<(String, PathBuf)> {
-    let wt_root = git::worktree_root().ok()?;
-    let wt_root = canonicalize_clean(&wt_root);
-    let dir_name = wt_root.file_name()?.to_str()?;
-
-    // Must contain "-pool-" pattern
-    if !dir_name.contains("-pool-") {
-        return None;
-    }
-
-    // Parent must be .worktrees/
-    let parent = wt_root.parent()?;
-    if parent.file_name()?.to_str()? != POOL_WORKTREES_DIR {
-        return None;
-    }
-
-    // Grandparent is the leader root
-    let leader = parent.parent()?.to_path_buf();
-
-    Some((dir_name.to_string(), leader))
-}
-
-/// Release a pool worktree: clean files, remove marker, run setup hook.
-/// Called from `gw cleanup` when inside a pool worktree.
-pub fn pool_release_after_cleanup(
-    pool_name: &str,
-    _leader_root: &Path,
+/// Release a single pool worktree: checkout home branch, clean files, remove marker, run setup hook.
+fn release_one(
+    entry: &PoolEntry,
+    acquired_dir: &Path,
+    repo_root: &Path,
+    default_remote: &str,
     verbose: bool,
 ) -> Result<()> {
-    let acquired_dir = acquired_dir()?;
-    let repo_root = main_repo_root()?;
+    let wt_path_str = entry.path.to_string_lossy().to_string();
 
-    let wt_root = git::worktree_root()?;
-    let wt_root = canonicalize_clean(&wt_root);
-    let wt_path_str = wt_root.to_string_lossy().to_string();
+    output::info(&format!("Releasing {}...", output::bold(&entry.name)));
 
-    output::info("Releasing pool worktree...");
+    // Checkout home branch (the pool worktree's own branch)
+    git::git_run_in_dir(&wt_path_str, &["checkout", &entry.branch], verbose)?;
+
+    // Reset to the default remote head so it's fresh for next acquire
+    git::git_run_in_dir(&wt_path_str, &["reset", "--hard", default_remote], verbose)?;
 
     // Clean untracked files
     git::git_run_in_dir(&wt_path_str, &["clean", "-fd"], verbose)?;
 
     // Run setup hook (if it fails, keep marker and warn)
-    if let Err(e) = run_setup_hook(&repo_root, &wt_path_str, verbose) {
+    if let Err(e) = run_setup_hook(repo_root, &wt_path_str, verbose) {
         output::warn(&format!(
             "Setup hook failed during release: {e}. Worktree remains acquired."
         ));
@@ -210,12 +185,12 @@ pub fn pool_release_after_cleanup(
     }
 
     // Remove acquired marker
-    let marker = acquired_dir.join(pool_name);
+    let marker = acquired_dir.join(&entry.name);
     if marker.exists() {
         std::fs::remove_file(&marker)?;
     }
 
-    output::success("Pool worktree released and available for reuse");
+    output::success(&format!("{} released", entry.name));
     Ok(())
 }
 
@@ -372,6 +347,88 @@ pub fn acquire(_verbose: bool) -> Result<()> {
     Ok(())
 }
 
+/// `gw worktree pool release [name]`
+pub fn release(name: Option<String>, verbose: bool) -> Result<()> {
+    if !git::is_git_repo() {
+        return Err(GwError::NotAGitRepository);
+    }
+
+    let pool_dir = pool_dir()?;
+    let wt_dir = worktrees_dir()?;
+    let acquired_dir = acquired_dir()?;
+    let prefix = pool_prefix()?;
+    let repo_root = main_repo_root()?;
+
+    if !wt_dir.exists() {
+        return Err(GwError::PoolNotInitialized);
+    }
+
+    let _lock = PoolLock::acquire(&pool_dir)?;
+    let state = PoolState::scan(&wt_dir, &acquired_dir, &prefix)?;
+
+    if state.entries.is_empty() {
+        return Err(GwError::PoolNotInitialized);
+    }
+
+    // Fetch once to get fresh default remote
+    git::fetch_prune(verbose)?;
+    let default_remote = git::get_default_remote_branch()?;
+
+    println!();
+
+    match name {
+        Some(ref n) => {
+            // Release a specific worktree by name
+            let entry = state
+                .find_by_name_or_path(n)
+                .ok_or_else(|| GwError::Other(format!("Worktree '{}' not found in pool", n)))?;
+
+            if entry.status != WorktreeStatus::Acquired {
+                return Err(GwError::Other(format!(
+                    "Worktree '{}' is not acquired",
+                    entry.name
+                )));
+            }
+
+            release_one(entry, &acquired_dir, &repo_root, &default_remote, verbose)?;
+        }
+        None => {
+            // Release all acquired worktrees
+            let acquired: Vec<_> = state
+                .entries
+                .iter()
+                .filter(|e| e.status == WorktreeStatus::Acquired)
+                .collect();
+
+            if acquired.is_empty() {
+                return Err(GwError::Other(
+                    "No acquired worktrees to release".to_string(),
+                ));
+            }
+
+            let total = acquired.len();
+            for (i, entry) in acquired.iter().enumerate() {
+                output::info(&format!("[{}/{}]", i + 1, total));
+                release_one(entry, &acquired_dir, &repo_root, &default_remote, verbose)?;
+            }
+        }
+    }
+
+    // Re-scan for final counts
+    let final_state = PoolState::scan(&wt_dir, &acquired_dir, &prefix)?;
+    let available = final_state.count_by_status(&WorktreeStatus::Available);
+    let acquired_count = final_state.count_by_status(&WorktreeStatus::Acquired);
+    let total = final_state.entries.len();
+
+    println!();
+    output::success(&format!(
+        "Pool: {} available, {} acquired, {} total",
+        available, acquired_count, total
+    ));
+
+    Ok(())
+}
+
 /// `gw worktree pool status`
 pub fn status(verbose: bool) -> Result<()> {
     if !git::is_git_repo() {
@@ -457,12 +514,16 @@ fn display_pool_next_action(action: &PoolNextAction) {
         PoolNextAction::Ready { available } => {
             output::action(&format!("Ready: {} worktree(s) available", available));
             println!("  gw worktree pool acquire");
+            println!("  gw worktree pool release          # release all acquired");
+            println!("  gw worktree pool release <name>   # release specific");
         }
         PoolNextAction::Exhausted { acquired } => {
             output::action(&format!(
-                "All {} worktree(s) acquired. Warm more or wait.",
+                "All {} worktree(s) acquired. Release or warm more.",
                 acquired
             ));
+            println!("  gw worktree pool release          # release all acquired");
+            println!("  gw worktree pool release <name>   # release specific");
             println!("  gw worktree pool warm <count>");
         }
         PoolNextAction::AllIdle { available } => {

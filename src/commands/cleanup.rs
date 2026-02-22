@@ -24,19 +24,6 @@ pub fn run(branch_name: Option<String>, verbose: bool) -> Result<()> {
         Some(name) => name,
         None => {
             if current == home_branch {
-                // In a pool worktree on home branch: just release back to pool
-                if let Some((pool_name, leader_root)) = super::worktree_pool::detect_pool_worktree()
-                {
-                    println!();
-                    output::info("On home branch in pool worktree, releasing...");
-                    super::worktree_pool::pool_release_after_cleanup(
-                        &pool_name,
-                        &leader_root,
-                        verbose,
-                    )?;
-                    output::ready("Pool worktree released", home_branch);
-                    return Ok(());
-                }
                 return Err(GwError::AlreadyOnHomeBranch(home_branch.to_string()));
             }
             current.clone()
@@ -134,12 +121,6 @@ pub fn run(branch_name: Option<String>, verbose: bool) -> Result<()> {
             stash_count
         ));
         output::action("git stash list");
-    }
-
-    // Pool worktree auto-release: if we're inside a pool worktree,
-    // clean untracked files, remove the acquire marker, and run setup hook
-    if let Some((pool_name, leader_root)) = super::worktree_pool::detect_pool_worktree() {
-        super::worktree_pool::pool_release_after_cleanup(&pool_name, &leader_root, verbose)?;
     }
 
     output::ready("Cleanup complete", home_branch);

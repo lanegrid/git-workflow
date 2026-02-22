@@ -446,6 +446,99 @@ fn test_drain_then_warm_again() {
     assert!(out.contains("1 created"), "output: {out}");
 }
 
+// --- release ---
+
+#[test]
+fn test_release_returns_worktree_to_pool() {
+    let origin = create_origin_repo();
+    let local = create_local_repo(origin.path());
+
+    run_gw(local.path(), &["worktree", "pool", "warm", "2"]);
+    run_gw(local.path(), &["worktree", "pool", "acquire"]);
+
+    // Status: 1 available, 1 acquired
+    let output = run_gw(local.path(), &["worktree", "pool", "status"]);
+    let out = stdout_str(&output);
+    assert!(out.contains("1 available"), "before release: {out}");
+    assert!(out.contains("1 acquired"), "before release: {out}");
+
+    // Release all
+    let output = run_gw(local.path(), &["worktree", "pool", "release"]);
+    assert_success(&output, "release");
+
+    // Status: 2 available, 0 acquired
+    let output = run_gw(local.path(), &["worktree", "pool", "status"]);
+    let out = stdout_str(&output);
+    assert!(out.contains("2 available"), "after release: {out}");
+    assert!(out.contains("0 acquired"), "after release: {out}");
+}
+
+#[test]
+fn test_release_by_name() {
+    let origin = create_origin_repo();
+    let local = create_local_repo(origin.path());
+    let leader = leader_name_for(local.path());
+    let prefix = format!("{leader}-pool-");
+
+    run_gw(local.path(), &["worktree", "pool", "warm", "2"]);
+
+    // Acquire both
+    run_gw(local.path(), &["worktree", "pool", "acquire"]);
+    run_gw(local.path(), &["worktree", "pool", "acquire"]);
+
+    // Release only the first one by name
+    let name = format!("{prefix}001");
+    let output = run_gw(local.path(), &["worktree", "pool", "release", &name]);
+    assert_success(&output, "release by name");
+
+    // Status: 1 available, 1 acquired
+    let output = run_gw(local.path(), &["worktree", "pool", "status"]);
+    let out = stdout_str(&output);
+    assert!(out.contains("1 available"), "after release by name: {out}");
+    assert!(out.contains("1 acquired"), "after release by name: {out}");
+}
+
+#[test]
+fn test_release_all() {
+    let origin = create_origin_repo();
+    let local = create_local_repo(origin.path());
+
+    run_gw(local.path(), &["worktree", "pool", "warm", "3"]);
+
+    // Acquire all 3
+    run_gw(local.path(), &["worktree", "pool", "acquire"]);
+    run_gw(local.path(), &["worktree", "pool", "acquire"]);
+    run_gw(local.path(), &["worktree", "pool", "acquire"]);
+
+    // Release all (no name arg)
+    let output = run_gw(local.path(), &["worktree", "pool", "release"]);
+    assert_success(&output, "release all");
+
+    // Status: 3 available, 0 acquired
+    let output = run_gw(local.path(), &["worktree", "pool", "status"]);
+    let out = stdout_str(&output);
+    assert!(out.contains("3 available"), "after release all: {out}");
+    assert!(out.contains("0 acquired"), "after release all: {out}");
+}
+
+#[test]
+fn test_release_fails_when_none_acquired() {
+    let origin = create_origin_repo();
+    let local = create_local_repo(origin.path());
+
+    run_gw(local.path(), &["worktree", "pool", "warm", "1"]);
+
+    // Release with nothing acquired
+    let output = run_gw(local.path(), &["worktree", "pool", "release"]);
+    assert!(
+        !output.status.success(),
+        "Expected release to fail when none acquired"
+    );
+
+    let err = stderr_str(&output);
+    assert!(err.contains("No acquired worktrees"), "stderr: {err}");
+}
+
 // --- full workflow ---
 
 #[test]
@@ -475,8 +568,18 @@ fn test_full_pool_lifecycle() {
     assert!(out.contains("2 available"), "output: {out}");
     assert!(out.contains("1 acquired"), "output: {out}");
 
-    // 5. Drain with force (since we have acquired worktrees)
-    let output = run_gw(local.path(), &["worktree", "pool", "drain", "--force"]);
+    // 5. Release (not drain!)
+    let output = run_gw(local.path(), &["worktree", "pool", "release"]);
+    assert_success(&output, "release");
+
+    // 6. Status shows 3 available again
+    let output = run_gw(local.path(), &["worktree", "pool", "status"]);
+    let out = stdout_str(&output);
+    assert!(out.contains("3 available"), "after release: {out}");
+    assert!(out.contains("0 acquired"), "after release: {out}");
+
+    // 7. Drain
+    let output = run_gw(local.path(), &["worktree", "pool", "drain"]);
     assert_success(&output, "drain");
 
     let out = stdout_str(&output);
