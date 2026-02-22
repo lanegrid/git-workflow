@@ -101,6 +101,30 @@ fn worktree_current_branch(path: &Path) -> String {
         .unwrap_or_else(|| "???".to_string())
 }
 
+/// Ensure `.worktrees/` is listed in the repo's `.gitignore`.
+/// Appends the entry if missing; creates the file if it doesn't exist.
+fn ensure_gitignore(repo_root: &Path) -> Result<()> {
+    let gitignore = repo_root.join(".gitignore");
+    let entry = ".worktrees/";
+
+    if gitignore.exists() {
+        let content = std::fs::read_to_string(&gitignore)?;
+        if content.lines().any(|line| line.trim() == entry) {
+            return Ok(());
+        }
+        // Append with a preceding newline if the file doesn't end with one
+        let prefix = if content.ends_with('\n') { "" } else { "\n" };
+        std::fs::write(&gitignore, format!("{content}{prefix}{entry}\n"))?;
+    } else {
+        std::fs::write(&gitignore, format!("{entry}\n"))?;
+    }
+
+    output::warn(&format!(
+        "Added {entry} to .gitignore — please commit this change"
+    ));
+    Ok(())
+}
+
 /// Get the owner name for acquire markers (current worktree directory name)
 fn current_owner_name() -> String {
     git::current_dir_name().unwrap_or_else(|_| "unknown".to_string())
@@ -191,6 +215,9 @@ pub fn warm(count: usize, verbose: bool) -> Result<()> {
     }
 
     let to_create = count - available;
+
+    // Ensure .worktrees/ is in .gitignore
+    ensure_gitignore(&repo_root)?;
 
     // Fetch once
     output::info("Fetching from origin...");
