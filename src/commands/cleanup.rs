@@ -125,8 +125,8 @@ pub fn run(branch_name: Option<String>, verbose: bool) -> Result<()> {
 
     // Pool worktree auto-release: if we're inside a pool worktree,
     // clean untracked files, remove the acquire marker, and run setup hook
-    if let Some(pool_name) = super::worktree_pool::detect_pool_worktree() {
-        super::worktree_pool::pool_release_after_cleanup(&pool_name, verbose)?;
+    if let Some((pool_name, leader_root)) = super::worktree_pool::detect_pool_worktree() {
+        super::worktree_pool::pool_release_after_cleanup(&pool_name, &leader_root, verbose)?;
     }
 
     output::ready("Cleanup complete", home_branch);

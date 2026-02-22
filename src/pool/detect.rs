@@ -2,7 +2,7 @@
 //!
 //! Instead of maintaining an inventory.json file, pool state is derived
 //! from the filesystem: directory existence determines pool membership,
-//! and marker files in `.git/worktree-pool/acquired/` determine status.
+//! and marker files in the per-worktree git dir determine status.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -58,8 +58,9 @@ impl PoolState {
     /// Scan the filesystem to build pool state.
     ///
     /// - `worktrees_dir`: path to `.worktrees/`
-    /// - `acquired_dir`: path to `.git/worktree-pool/acquired/`
-    pub fn scan(worktrees_dir: &Path, acquired_dir: &Path) -> Result<Self> {
+    /// - `acquired_dir`: path to the acquired markers directory
+    /// - `prefix`: directory name prefix to filter (e.g., "web-2-pool-")
+    pub fn scan(worktrees_dir: &Path, acquired_dir: &Path, prefix: &str) -> Result<Self> {
         let mut entries = Vec::new();
 
         if !worktrees_dir.exists() {
@@ -72,7 +73,7 @@ impl PoolState {
                 e.file_type().map(|t| t.is_dir()).unwrap_or(false)
                     && e.file_name()
                         .to_str()
-                        .is_some_and(|n| n.starts_with("pool-"))
+                        .is_some_and(|n| n.starts_with(prefix))
             })
             .collect();
 
@@ -126,16 +127,17 @@ impl PoolState {
             .find(|e| e.name == identifier || e.path.to_string_lossy() == identifier)
     }
 
-    /// Find the next pool name (pool-NNN) based on existing entries
-    pub fn next_name(&self) -> String {
+    /// Find the next pool name based on existing entries.
+    /// Returns `{prefix}NNN` (e.g., "web-2-pool-003").
+    pub fn next_name(&self, prefix: &str) -> String {
         let max = self
             .entries
             .iter()
-            .filter_map(|e| e.name.strip_prefix("pool-"))
+            .filter_map(|e| e.name.strip_prefix(prefix))
             .filter_map(|n| n.parse::<u32>().ok())
             .max()
             .unwrap_or(0);
-        format!("pool-{:03}", max + 1)
+        format!("{prefix}{:03}", max + 1)
     }
 
     /// Determine the recommended next action

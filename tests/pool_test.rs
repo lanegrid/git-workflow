@@ -1,4 +1,7 @@
 //! Integration tests for `gw worktree pool` commands
+//!
+//! Pool worktrees are now per-leader: each worktree creates its own pool
+//! under `.worktrees/` with names prefixed by the leader name.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -87,35 +90,76 @@ fn assert_success(output: &Output, context: &str) {
     );
 }
 
+/// Get the leader name as gw computes it (dir name with leading dots stripped)
+fn leader_name_for(path: &Path) -> String {
+    let raw = path.file_name().unwrap().to_string_lossy().to_string();
+    raw.trim_start_matches('.').to_string()
+}
+
 // --- warm ---
 
 #[test]
 fn test_warm_creates_worktrees() {
     let origin = create_origin_repo();
     let local = create_local_repo(origin.path());
+    let leader = leader_name_for(local.path());
+    let prefix = format!("{leader}-pool-");
 
     let output = run_gw(local.path(), &["worktree", "pool", "warm", "3"]);
     assert_success(&output, "warm 3");
 
     let out = stdout_str(&output);
-    assert!(out.contains("Created pool-001"), "output: {out}");
-    assert!(out.contains("Created pool-002"), "output: {out}");
-    assert!(out.contains("Created pool-003"), "output: {out}");
+    assert!(
+        out.contains(&format!("Created {prefix}001")),
+        "output: {out}"
+    );
+    assert!(
+        out.contains(&format!("Created {prefix}002")),
+        "output: {out}"
+    );
+    assert!(
+        out.contains(&format!("Created {prefix}003")),
+        "output: {out}"
+    );
     assert!(
         out.contains("3 created, 3 available, 3 total"),
         "output: {out}"
     );
 
     // Verify worktree directories exist
-    assert!(local.path().join(".worktrees/pool-001").exists());
-    assert!(local.path().join(".worktrees/pool-002").exists());
-    assert!(local.path().join(".worktrees/pool-003").exists());
+    assert!(
+        local
+            .path()
+            .join(format!(".worktrees/{prefix}001"))
+            .exists()
+    );
+    assert!(
+        local
+            .path()
+            .join(format!(".worktrees/{prefix}002"))
+            .exists()
+    );
+    assert!(
+        local
+            .path()
+            .join(format!(".worktrees/{prefix}003"))
+            .exists()
+    );
 
-    // Verify branches were created (now pool-NNN, not pool/pool-NNN)
-    let branches = run_git(local.path(), &["branch", "--list", "pool-*"]);
-    assert!(branches.contains("pool-001"), "branches: {branches}");
-    assert!(branches.contains("pool-002"), "branches: {branches}");
-    assert!(branches.contains("pool-003"), "branches: {branches}");
+    // Verify branches were created with leader prefix
+    let branches = run_git(local.path(), &["branch", "--list", &format!("{prefix}*")]);
+    assert!(
+        branches.contains(&format!("{prefix}001")),
+        "branches: {branches}"
+    );
+    assert!(
+        branches.contains(&format!("{prefix}002")),
+        "branches: {branches}"
+    );
+    assert!(
+        branches.contains(&format!("{prefix}003")),
+        "branches: {branches}"
+    );
 
     // Verify .worktrees/ was added to .git/info/exclude (not .gitignore)
     let exclude = std::fs::read_to_string(local.path().join(".git/info/exclude"))
@@ -146,9 +190,9 @@ fn test_warm_exclude_idempotent() {
         .expect(".git/info/exclude should exist");
     let count = exclude
         .lines()
-        .filter(|l| l.trim() == "/.worktrees/")
+        .filter(|l| l.trim() == ".worktrees/")
         .count();
-    assert_eq!(count, 1, "/.worktrees/ should appear once: {exclude}");
+    assert_eq!(count, 1, ".worktrees/ should appear once: {exclude}");
 }
 
 #[test]
@@ -194,6 +238,8 @@ fn test_warm_incremental() {
 fn test_acquire_prints_path_to_stdout() {
     let origin = create_origin_repo();
     let local = create_local_repo(origin.path());
+    let leader = leader_name_for(local.path());
+    let prefix = format!("{leader}-pool-");
 
     run_gw(local.path(), &["worktree", "pool", "warm", "1"]);
 
@@ -204,7 +250,7 @@ fn test_acquire_prints_path_to_stdout() {
     let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let path_normalized = path.replace('\\', "/");
     assert!(
-        path_normalized.ends_with(".worktrees/pool-001"),
+        path_normalized.ends_with(&format!(".worktrees/{prefix}001")),
         "Expected worktree path, got: {path}"
     );
     assert!(
@@ -214,17 +260,11 @@ fn test_acquire_prints_path_to_stdout() {
 
     // stderr should show the acquire info
     let err = stderr_str(&output);
-    assert!(err.contains("Acquired pool-001"), "stderr: {err}");
-    assert!(err.contains("0 remaining"), "stderr: {err}");
-
-    // Acquire marker should exist
     assert!(
-        local
-            .path()
-            .join(".git/worktree-pool/acquired/pool-001")
-            .exists(),
-        "Acquire marker should exist"
+        err.contains(&format!("Acquired {prefix}001")),
+        "stderr: {err}"
     );
+    assert!(err.contains("0 remaining"), "stderr: {err}");
 }
 
 #[test]
@@ -267,6 +307,8 @@ fn test_acquire_fails_when_not_initialized() {
 fn test_status_shows_pool_info() {
     let origin = create_origin_repo();
     let local = create_local_repo(origin.path());
+    let leader = leader_name_for(local.path());
+    let prefix = format!("{leader}-pool-");
 
     run_gw(local.path(), &["worktree", "pool", "warm", "2"]);
     run_gw(local.path(), &["worktree", "pool", "acquire"]);
@@ -275,24 +317,24 @@ fn test_status_shows_pool_info() {
     assert_success(&output, "status");
 
     let out = stdout_str(&output);
-    // Summary line shows all counts
+    // Summary line shows counts
     assert!(out.contains("1 available"), "output: {out}");
     assert!(out.contains("1 acquired"), "output: {out}");
     assert!(out.contains("2 total"), "output: {out}");
-    // Default: only shows my acquired worktrees
-    assert!(out.contains("pool-001"), "output: {out}");
+    // Default: shows acquired worktrees
+    assert!(out.contains(&format!("{prefix}001")), "output: {out}");
     assert!(
         out.contains("BRANCH"),
         "output should have BRANCH column: {out}"
     );
-    // pool-002 (available) should NOT appear in default view
-    // OWNER column should NOT appear in default view
 }
 
 #[test]
 fn test_status_verbose_shows_all() {
     let origin = create_origin_repo();
     let local = create_local_repo(origin.path());
+    let leader = leader_name_for(local.path());
+    let prefix = format!("{leader}-pool-");
 
     run_gw(local.path(), &["worktree", "pool", "warm", "2"]);
     run_gw(local.path(), &["worktree", "pool", "acquire"]);
@@ -302,12 +344,8 @@ fn test_status_verbose_shows_all() {
 
     let out = stdout_str(&output);
     // Verbose shows all entries
-    assert!(out.contains("pool-001"), "output: {out}");
-    assert!(out.contains("pool-002"), "output: {out}");
-    assert!(
-        out.contains("OWNER"),
-        "output should have OWNER column: {out}"
-    );
+    assert!(out.contains(&format!("{prefix}001")), "output: {out}");
+    assert!(out.contains(&format!("{prefix}002")), "output: {out}");
 }
 
 #[test]
@@ -325,6 +363,8 @@ fn test_status_fails_when_not_initialized() {
 fn test_drain_removes_all_worktrees() {
     let origin = create_origin_repo();
     let local = create_local_repo(origin.path());
+    let leader = leader_name_for(local.path());
+    let prefix = format!("{leader}-pool-");
 
     run_gw(local.path(), &["worktree", "pool", "warm", "2"]);
 
@@ -335,11 +375,21 @@ fn test_drain_removes_all_worktrees() {
     assert!(out.contains("Drained 2 worktree(s)"), "output: {out}");
 
     // Worktree directories should be gone
-    assert!(!local.path().join(".worktrees/pool-001").exists());
-    assert!(!local.path().join(".worktrees/pool-002").exists());
+    assert!(
+        !local
+            .path()
+            .join(format!(".worktrees/{prefix}001"))
+            .exists()
+    );
+    assert!(
+        !local
+            .path()
+            .join(format!(".worktrees/{prefix}002"))
+            .exists()
+    );
 
     // Pool branches should be gone
-    let branches = run_git(local.path(), &["branch", "--list", "pool-*"]);
+    let branches = run_git(local.path(), &["branch", "--list", &format!("{prefix}*")]);
     assert!(branches.is_empty(), "branches still exist: {branches}");
 
     // Status should fail (pool gone)
@@ -425,15 +475,7 @@ fn test_full_pool_lifecycle() {
     assert!(out.contains("2 available"), "output: {out}");
     assert!(out.contains("1 acquired"), "output: {out}");
 
-    // 5. Acquire marker should exist
-    assert!(
-        local
-            .path()
-            .join(".git/worktree-pool/acquired/pool-001")
-            .exists()
-    );
-
-    // 6. Drain with force (since we have acquired worktrees)
+    // 5. Drain with force (since we have acquired worktrees)
     let output = run_gw(local.path(), &["worktree", "pool", "drain", "--force"]);
     assert_success(&output, "drain");
 

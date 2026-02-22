@@ -1,7 +1,8 @@
-//! `gw worktree pool` commands — Worktree pool management
+//! `gw worktree pool` commands — Per-leader worktree pool management
 //!
+//! Each leader worktree owns its own pool under `.worktrees/`.
 //! Pool state is derived from the filesystem, not from an inventory file.
-//! Marker files in `.git/worktree-pool/acquired/` track acquisition state.
+//! Marker files in the per-worktree git dir track acquisition state.
 
 use std::path::{Path, PathBuf};
 
@@ -10,10 +11,10 @@ use crate::git;
 use crate::output;
 use crate::pool::{PoolEntry, PoolLock, PoolNextAction, PoolState, WorktreeStatus};
 
-/// Directory name under git_common_dir for pool metadata
-const POOL_META_DIR: &str = "worktree-pool";
+/// Directory name under the per-worktree git dir for pool metadata
+const POOL_META_DIR: &str = "pool";
 
-/// Directory name under repo root for pool worktrees
+/// Directory name under worktree root for pool worktrees
 const POOL_WORKTREES_DIR: &str = ".worktrees";
 
 /// Setup hook path relative to repo root
@@ -36,6 +37,36 @@ fn canonicalize_clean(path: &Path) -> PathBuf {
     canonical
 }
 
+/// Get the current worktree root (works from main repo or any worktree)
+fn leader_root() -> Result<PathBuf> {
+    let root = git::worktree_root()?;
+    Ok(canonicalize_clean(&root))
+}
+
+/// Get the leader name (the worktree directory name, e.g., "web-2").
+/// Sanitizes the name to be valid as part of a git branch name.
+fn leader_name() -> Result<String> {
+    let root = leader_root()?;
+    let raw = root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(String::from)
+        .ok_or_else(|| GwError::Other("Could not determine leader name".to_string()))?;
+    // Strip leading dots (invalid in git branch names)
+    let sanitized = raw.trim_start_matches('.');
+    if sanitized.is_empty() {
+        return Err(GwError::Other(format!(
+            "Leader directory name is not valid for branch naming: {raw}"
+        )));
+    }
+    Ok(sanitized.to_string())
+}
+
+/// Pool entry name prefix for the current leader (e.g., "web-2-pool-")
+fn pool_prefix() -> Result<String> {
+    Ok(format!("{}-pool-", leader_name()?))
+}
+
 /// Get the main repository root (parent of .git), even from inside a worktree.
 fn main_repo_root() -> Result<PathBuf> {
     let common = git::git_common_dir()?;
@@ -46,10 +77,11 @@ fn main_repo_root() -> Result<PathBuf> {
         .ok_or_else(|| GwError::Other("Could not determine main repository root".to_string()))
 }
 
-/// Resolve the pool metadata directory ({git_common_dir}/worktree-pool/)
+/// Resolve the pool metadata directory (per-worktree: {git_dir}/pool/)
 fn pool_dir() -> Result<PathBuf> {
-    let common = git::git_common_dir()?;
-    Ok(common.join(POOL_META_DIR))
+    let git_dir = git::git_dir()?;
+    let git_dir = canonicalize_clean(&git_dir);
+    Ok(git_dir.join(POOL_META_DIR))
 }
 
 /// Resolve the acquired markers directory
@@ -57,9 +89,9 @@ fn acquired_dir() -> Result<PathBuf> {
     Ok(pool_dir()?.join(ACQUIRED_DIR))
 }
 
-/// Resolve the worktrees directory ({main_repo_root}/.worktrees/)
+/// Resolve the worktrees directory ({leader_root}/.worktrees/)
 fn worktrees_dir() -> Result<PathBuf> {
-    let root = main_repo_root()?;
+    let root = leader_root()?;
     Ok(root.join(POOL_WORKTREES_DIR))
 }
 
@@ -106,7 +138,7 @@ fn worktree_current_branch(path: &Path) -> String {
 fn ensure_excluded() -> Result<()> {
     let common = git::git_common_dir()?;
     let exclude_path = common.join("info").join("exclude");
-    let entry = "/.worktrees/";
+    let entry = ".worktrees/";
 
     if exclude_path.exists() {
         let content = std::fs::read_to_string(&exclude_path)?;
@@ -123,38 +155,46 @@ fn ensure_excluded() -> Result<()> {
     Ok(())
 }
 
-/// Get the owner name for acquire markers (current worktree directory name)
-fn current_owner_name() -> String {
-    git::current_dir_name().unwrap_or_else(|_| "unknown".to_string())
-}
-
 /// Check if the current directory is inside a pool worktree.
-/// Returns the pool worktree name if so.
-pub fn detect_pool_worktree() -> Option<String> {
-    let cwd = std::env::current_dir().ok()?;
-    let wt_dir = worktrees_dir().ok()?;
+/// Returns `(pool_name, leader_root)` if so.
+///
+/// Detection: the worktree toplevel's parent is `.worktrees/`, and
+/// the directory name contains "-pool-".
+pub fn detect_pool_worktree() -> Option<(String, PathBuf)> {
+    let wt_root = git::worktree_root().ok()?;
+    let wt_root = canonicalize_clean(&wt_root);
+    let dir_name = wt_root.file_name()?.to_str()?;
 
-    if !cwd.starts_with(&wt_dir) {
+    // Must contain "-pool-" pattern
+    if !dir_name.contains("-pool-") {
         return None;
     }
 
-    // Get the pool worktree directory name (first component after .worktrees/)
-    cwd.strip_prefix(&wt_dir)
-        .ok()
-        .and_then(|rel| rel.components().next())
-        .and_then(|c| c.as_os_str().to_str())
-        .filter(|name| name.starts_with("pool-"))
-        .map(String::from)
+    // Parent must be .worktrees/
+    let parent = wt_root.parent()?;
+    if parent.file_name()?.to_str()? != POOL_WORKTREES_DIR {
+        return None;
+    }
+
+    // Grandparent is the leader root
+    let leader = parent.parent()?.to_path_buf();
+
+    Some((dir_name.to_string(), leader))
 }
 
 /// Release a pool worktree: clean files, remove marker, run setup hook.
 /// Called from `gw cleanup` when inside a pool worktree.
-pub fn pool_release_after_cleanup(pool_name: &str, verbose: bool) -> Result<()> {
+pub fn pool_release_after_cleanup(
+    pool_name: &str,
+    _leader_root: &Path,
+    verbose: bool,
+) -> Result<()> {
     let acquired_dir = acquired_dir()?;
     let repo_root = main_repo_root()?;
-    let wt_dir = worktrees_dir()?;
-    let wt_path = wt_dir.join(pool_name);
-    let wt_path_str = wt_path.to_string_lossy().to_string();
+
+    let wt_root = git::worktree_root()?;
+    let wt_root = canonicalize_clean(&wt_root);
+    let wt_path_str = wt_root.to_string_lossy().to_string();
 
     output::info("Releasing pool worktree...");
 
@@ -191,6 +231,7 @@ pub fn warm(count: usize, verbose: bool) -> Result<()> {
     let wt_dir = worktrees_dir()?;
     let acquired_dir = acquired_dir()?;
     let repo_root = main_repo_root()?;
+    let prefix = pool_prefix()?;
 
     println!();
     output::info(&format!(
@@ -200,7 +241,7 @@ pub fn warm(count: usize, verbose: bool) -> Result<()> {
 
     // Acquire lock and scan filesystem
     let _lock = PoolLock::acquire(&pool_dir)?;
-    let mut state = PoolState::scan(&wt_dir, &acquired_dir)?;
+    let mut state = PoolState::scan(&wt_dir, &acquired_dir, &prefix)?;
 
     let available = state.count_by_status(&WorktreeStatus::Available);
     let acquired = state.count_by_status(&WorktreeStatus::Acquired);
@@ -229,7 +270,7 @@ pub fn warm(count: usize, verbose: bool) -> Result<()> {
 
     let mut created = 0;
     for i in 0..to_create {
-        let name = state.next_name();
+        let name = state.next_name(&prefix);
         let abs_path = canonicalize_clean(&wt_dir).join(&name);
         let abs_path_str = abs_path.to_string_lossy().to_string();
         // Branch name = directory name (gw convention: dir name = home branch)
@@ -272,7 +313,7 @@ pub fn warm(count: usize, verbose: bool) -> Result<()> {
     }
 
     // Re-scan for accurate final counts
-    let final_state = PoolState::scan(&wt_dir, &acquired_dir)?;
+    let final_state = PoolState::scan(&wt_dir, &acquired_dir, &prefix)?;
     let total = final_state.entries.len();
     let available = final_state.count_by_status(&WorktreeStatus::Available);
 
@@ -293,6 +334,7 @@ pub fn acquire(_verbose: bool) -> Result<()> {
     let pool_dir = pool_dir()?;
     let wt_dir = worktrees_dir()?;
     let acquired_dir = acquired_dir()?;
+    let prefix = pool_prefix()?;
 
     if !wt_dir.exists() {
         return Err(GwError::PoolNotInitialized);
@@ -303,7 +345,7 @@ pub fn acquire(_verbose: bool) -> Result<()> {
     // Ensure acquired dir exists
     std::fs::create_dir_all(&acquired_dir)?;
 
-    let state = PoolState::scan(&wt_dir, &acquired_dir)?;
+    let state = PoolState::scan(&wt_dir, &acquired_dir, &prefix)?;
 
     if state.entries.is_empty() {
         return Err(GwError::PoolNotInitialized);
@@ -311,8 +353,8 @@ pub fn acquire(_verbose: bool) -> Result<()> {
 
     let entry = state.find_available().ok_or(GwError::PoolExhausted)?;
 
-    // Create marker file with owner name
-    let owner = current_owner_name();
+    // Create marker file with leader name as owner
+    let owner = leader_name()?;
     std::fs::write(acquired_dir.join(&entry.name), &owner)?;
 
     let path = entry.path.to_string_lossy().to_string();
@@ -320,8 +362,8 @@ pub fn acquire(_verbose: bool) -> Result<()> {
 
     let remaining = state.count_by_status(&WorktreeStatus::Available) - 1;
     eprintln!(
-        "\x1b[0;32m\u{2713}\x1b[0m Acquired {} (owner: {}, {} remaining)",
-        name, owner, remaining,
+        "\x1b[0;32m\u{2713}\x1b[0m Acquired {} ({} remaining)",
+        name, remaining,
     );
 
     // Print ONLY the path to stdout for `path=$(gw worktree pool acquire)`
@@ -338,46 +380,43 @@ pub fn status(verbose: bool) -> Result<()> {
 
     let wt_dir = worktrees_dir()?;
     let acquired_dir = acquired_dir()?;
+    let prefix = pool_prefix()?;
 
     if !wt_dir.exists() {
         return Err(GwError::PoolNotInitialized);
     }
 
     // Read-only — no lock needed
-    let state = PoolState::scan(&wt_dir, &acquired_dir)?;
+    let state = PoolState::scan(&wt_dir, &acquired_dir, &prefix)?;
 
     if state.entries.is_empty() {
         return Err(GwError::PoolNotInitialized);
     }
 
-    let me = current_owner_name();
     let available = state.count_by_status(&WorktreeStatus::Available);
     let acquired = state.count_by_status(&WorktreeStatus::Acquired);
-    let mine: Vec<&PoolEntry> = state
-        .entries
-        .iter()
-        .filter(|e| e.owner.as_deref() == Some(&me))
-        .collect();
     let total = state.entries.len();
 
     println!();
     output::info(&format!(
-        "Pool: {} available, {} acquired ({} by you), {} total",
+        "Pool: {} available, {} acquired, {} total",
         output::bold(&available.to_string()),
         output::bold(&acquired.to_string()),
-        output::bold(&mine.len().to_string()),
         output::bold(&total.to_string()),
     ));
 
-    if !mine.is_empty() {
+    if acquired > 0 {
         println!();
-        let header = format!("{:<12} {:<24}", "NAME", "BRANCH");
+        let header = format!("{:<24} {:<24}", "NAME", "BRANCH");
         println!("{header}");
-        println!("{}", "-".repeat(36));
+        println!("{}", "-".repeat(48));
 
-        for entry in &mine {
+        for entry in &state.entries {
+            if entry.status != WorktreeStatus::Acquired {
+                continue;
+            }
             let branch = worktree_current_branch(&entry.path);
-            println!("{:<12} {}", entry.name, branch);
+            println!("{:<24} {}", entry.name, branch);
         }
     }
 
@@ -386,9 +425,9 @@ pub fn status(verbose: bool) -> Result<()> {
         println!();
         output::info("All entries:");
         println!();
-        let header = format!("{:<12} {:<12} {:<24} OWNER", "NAME", "STATUS", "BRANCH");
+        let header = format!("{:<24} {:<12} {:<24}", "NAME", "STATUS", "BRANCH");
         println!("{header}");
-        println!("{}", "-".repeat(72));
+        println!("{}", "-".repeat(60));
 
         for entry in &state.entries {
             let branch = if entry.status == WorktreeStatus::Acquired {
@@ -396,11 +435,7 @@ pub fn status(verbose: bool) -> Result<()> {
             } else {
                 entry.branch.clone()
             };
-            let owner = entry.owner.as_deref().unwrap_or("-");
-            println!(
-                "{:<12} {:<12} {:<24} {}",
-                entry.name, entry.status, branch, owner
-            );
+            println!("{:<24} {:<12} {}", entry.name, entry.status, branch);
         }
     }
 
@@ -450,10 +485,11 @@ pub fn drain(force: bool, verbose: bool) -> Result<()> {
     let pool_dir = pool_dir()?;
     let wt_dir = worktrees_dir()?;
     let acquired_dir = acquired_dir()?;
+    let prefix = pool_prefix()?;
     // Resolve all paths upfront — the cwd might be inside a pool worktree
     // that we're about to delete.
-    let repo_root = main_repo_root()?;
-    let repo_root_str = repo_root.to_string_lossy().to_string();
+    let leader = leader_root()?;
+    let leader_str = leader.to_string_lossy().to_string();
 
     if !wt_dir.exists() {
         return Err(GwError::PoolNotInitialized);
@@ -463,7 +499,7 @@ pub fn drain(force: bool, verbose: bool) -> Result<()> {
     output::info("Draining worktree pool...");
 
     let _lock = PoolLock::acquire(&pool_dir)?;
-    let state = PoolState::scan(&wt_dir, &acquired_dir)?;
+    let state = PoolState::scan(&wt_dir, &acquired_dir, &prefix)?;
 
     if state.entries.is_empty() {
         return Err(GwError::PoolNotInitialized);
@@ -487,9 +523,9 @@ pub fn drain(force: bool, verbose: bool) -> Result<()> {
 
         let path_str = entry.path.to_string_lossy().to_string();
 
-        // Remove the worktree (run from repo_root so it works even if cwd is deleted)
+        // Remove the worktree (run from leader root so it works even if cwd is deleted)
         if let Err(e) = git::git_run_in_dir(
-            &repo_root_str,
+            &leader_str,
             &["worktree", "remove", "--force", &path_str],
             verbose,
         ) {
@@ -498,8 +534,7 @@ pub fn drain(force: bool, verbose: bool) -> Result<()> {
         }
 
         // Delete the pool branch
-        if let Err(e) =
-            git::git_run_in_dir(&repo_root_str, &["branch", "-D", &entry.branch], verbose)
+        if let Err(e) = git::git_run_in_dir(&leader_str, &["branch", "-D", &entry.branch], verbose)
         {
             output::warn(&format!("Failed to delete branch {}: {e}", entry.branch));
         }
@@ -518,7 +553,7 @@ pub fn drain(force: bool, verbose: bool) -> Result<()> {
     let _ = std::fs::remove_file(pool_dir.join("pool.lock"));
 
     // Prune worktree references
-    git::git_run_in_dir(&repo_root_str, &["worktree", "prune"], verbose)?;
+    git::git_run_in_dir(&leader_str, &["worktree", "prune"], verbose)?;
 
     // Remove empty directories
     if wt_dir.exists() {
