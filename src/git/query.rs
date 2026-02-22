@@ -39,6 +39,11 @@ pub fn current_branch() -> Result<String> {
     git_output(&["rev-parse", "--abbrev-ref", "HEAD"])
 }
 
+/// Get the worktree root (the top-level working directory of the current worktree)
+pub fn worktree_root() -> Result<PathBuf> {
+    git_output(&["rev-parse", "--show-toplevel"]).map(PathBuf::from)
+}
+
 /// Get the git directory (.git or .git/worktrees/xxx)
 pub fn git_dir() -> Result<PathBuf> {
     git_output(&["rev-parse", "--git-dir"]).map(PathBuf::from)

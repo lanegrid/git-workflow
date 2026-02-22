@@ -8,6 +8,9 @@ use tempfile::TempDir;
 use super::detect::{PoolNextAction, PoolState, WorktreeStatus};
 use super::lock::PoolLock;
 
+/// Default prefix for tests
+const PREFIX: &str = "pool-";
+
 /// Create pool directories and optional acquire markers for testing
 fn setup_pool(
     dir: &TempDir,
@@ -37,7 +40,7 @@ fn test_scan_empty_directory() {
     fs::create_dir_all(&wt_dir).unwrap();
     fs::create_dir_all(&acq_dir).unwrap();
 
-    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    let state = PoolState::scan(&wt_dir, &acq_dir, PREFIX).unwrap();
     assert!(state.entries.is_empty());
 }
 
@@ -47,7 +50,7 @@ fn test_scan_nonexistent_directory() {
     let wt_dir = dir.path().join(".worktrees");
     let acq_dir = dir.path().join("acquired");
 
-    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    let state = PoolState::scan(&wt_dir, &acq_dir, PREFIX).unwrap();
     assert!(state.entries.is_empty());
 }
 
@@ -56,7 +59,7 @@ fn test_scan_finds_pool_directories_sorted() {
     let dir = TempDir::new().unwrap();
     let (wt_dir, acq_dir) = setup_pool(&dir, &["pool-003", "pool-001", "pool-002"], &[]);
 
-    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    let state = PoolState::scan(&wt_dir, &acq_dir, PREFIX).unwrap();
     assert_eq!(state.entries.len(), 3);
     assert_eq!(state.entries[0].name, "pool-001");
     assert_eq!(state.entries[1].name, "pool-002");
@@ -74,9 +77,36 @@ fn test_scan_ignores_non_pool_directories() {
     fs::create_dir_all(wt_dir.join("my-worktree")).unwrap();
     fs::create_dir_all(&acq_dir).unwrap();
 
-    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    let state = PoolState::scan(&wt_dir, &acq_dir, PREFIX).unwrap();
     assert_eq!(state.entries.len(), 1);
     assert_eq!(state.entries[0].name, "pool-001");
+}
+
+#[test]
+fn test_scan_filters_by_prefix() {
+    let dir = TempDir::new().unwrap();
+    let (wt_dir, acq_dir) = setup_pool(
+        &dir,
+        &[
+            "web-2-pool-001",
+            "web-2-pool-002",
+            "web-3-pool-001",
+            "web-3-pool-002",
+        ],
+        &[],
+    );
+
+    // Only web-2's pool entries
+    let state = PoolState::scan(&wt_dir, &acq_dir, "web-2-pool-").unwrap();
+    assert_eq!(state.entries.len(), 2);
+    assert_eq!(state.entries[0].name, "web-2-pool-001");
+    assert_eq!(state.entries[1].name, "web-2-pool-002");
+
+    // Only web-3's pool entries
+    let state = PoolState::scan(&wt_dir, &acq_dir, "web-3-pool-").unwrap();
+    assert_eq!(state.entries.len(), 2);
+    assert_eq!(state.entries[0].name, "web-3-pool-001");
+    assert_eq!(state.entries[1].name, "web-3-pool-002");
 }
 
 #[test]
@@ -84,7 +114,7 @@ fn test_scan_detects_acquired_from_marker() {
     let dir = TempDir::new().unwrap();
     let (wt_dir, acq_dir) = setup_pool(&dir, &["pool-001", "pool-002"], &[("pool-001", "web-2")]);
 
-    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    let state = PoolState::scan(&wt_dir, &acq_dir, PREFIX).unwrap();
     assert_eq!(state.entries[0].status, WorktreeStatus::Acquired);
     assert_eq!(state.entries[0].owner.as_deref(), Some("web-2"));
     assert_eq!(state.entries[1].status, WorktreeStatus::Available);
@@ -96,7 +126,7 @@ fn test_scan_available_when_no_marker() {
     let dir = TempDir::new().unwrap();
     let (wt_dir, acq_dir) = setup_pool(&dir, &["pool-001"], &[]);
 
-    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    let state = PoolState::scan(&wt_dir, &acq_dir, PREFIX).unwrap();
     assert_eq!(state.entries[0].status, WorktreeStatus::Available);
 }
 
@@ -111,7 +141,7 @@ fn test_count_by_status_mixed() {
         &[("pool-001", "web-2"), ("pool-003", "web-3")],
     );
 
-    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    let state = PoolState::scan(&wt_dir, &acq_dir, PREFIX).unwrap();
     assert_eq!(state.count_by_status(&WorktreeStatus::Available), 1);
     assert_eq!(state.count_by_status(&WorktreeStatus::Acquired), 2);
 }
@@ -127,7 +157,7 @@ fn test_find_available_returns_first() {
         &[("pool-001", "web-2")],
     );
 
-    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    let state = PoolState::scan(&wt_dir, &acq_dir, PREFIX).unwrap();
     let found = state.find_available().unwrap();
     assert_eq!(found.name, "pool-002");
 }
@@ -141,7 +171,7 @@ fn test_find_available_none_when_all_acquired() {
         &[("pool-001", "web-2"), ("pool-002", "web-3")],
     );
 
-    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    let state = PoolState::scan(&wt_dir, &acq_dir, PREFIX).unwrap();
     assert!(state.find_available().is_none());
 }
 
@@ -152,7 +182,7 @@ fn test_find_by_name() {
     let dir = TempDir::new().unwrap();
     let (wt_dir, acq_dir) = setup_pool(&dir, &["pool-001", "pool-002"], &[]);
 
-    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    let state = PoolState::scan(&wt_dir, &acq_dir, PREFIX).unwrap();
     let found = state.find_by_name_or_path("pool-002").unwrap();
     assert_eq!(found.name, "pool-002");
 }
@@ -162,7 +192,7 @@ fn test_find_by_path() {
     let dir = TempDir::new().unwrap();
     let (wt_dir, acq_dir) = setup_pool(&dir, &["pool-001"], &[]);
 
-    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    let state = PoolState::scan(&wt_dir, &acq_dir, PREFIX).unwrap();
     let path_str = wt_dir.join("pool-001").to_string_lossy().to_string();
     let found = state.find_by_name_or_path(&path_str).unwrap();
     assert_eq!(found.name, "pool-001");
@@ -173,7 +203,7 @@ fn test_find_nonexistent() {
     let dir = TempDir::new().unwrap();
     let (wt_dir, acq_dir) = setup_pool(&dir, &["pool-001"], &[]);
 
-    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    let state = PoolState::scan(&wt_dir, &acq_dir, PREFIX).unwrap();
     assert!(state.find_by_name_or_path("pool-999").is_none());
 }
 
@@ -185,8 +215,8 @@ fn test_next_name_empty() {
     let wt_dir = dir.path().join(".worktrees");
     let acq_dir = dir.path().join("acquired");
 
-    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
-    assert_eq!(state.next_name(), "pool-001");
+    let state = PoolState::scan(&wt_dir, &acq_dir, PREFIX).unwrap();
+    assert_eq!(state.next_name(PREFIX), "pool-001");
 }
 
 #[test]
@@ -194,8 +224,8 @@ fn test_next_name_sequential() {
     let dir = TempDir::new().unwrap();
     let (wt_dir, acq_dir) = setup_pool(&dir, &["pool-001", "pool-002", "pool-003"], &[]);
 
-    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
-    assert_eq!(state.next_name(), "pool-004");
+    let state = PoolState::scan(&wt_dir, &acq_dir, PREFIX).unwrap();
+    assert_eq!(state.next_name(PREFIX), "pool-004");
 }
 
 #[test]
@@ -203,8 +233,17 @@ fn test_next_name_with_gap() {
     let dir = TempDir::new().unwrap();
     let (wt_dir, acq_dir) = setup_pool(&dir, &["pool-001", "pool-005"], &[]);
 
-    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
-    assert_eq!(state.next_name(), "pool-006");
+    let state = PoolState::scan(&wt_dir, &acq_dir, PREFIX).unwrap();
+    assert_eq!(state.next_name(PREFIX), "pool-006");
+}
+
+#[test]
+fn test_next_name_with_leader_prefix() {
+    let dir = TempDir::new().unwrap();
+    let (wt_dir, acq_dir) = setup_pool(&dir, &["web-2-pool-001", "web-2-pool-002"], &[]);
+
+    let state = PoolState::scan(&wt_dir, &acq_dir, "web-2-pool-").unwrap();
+    assert_eq!(state.next_name("web-2-pool-"), "web-2-pool-003");
 }
 
 // --- PoolNextAction ---
@@ -215,7 +254,7 @@ fn test_next_action_warm_pool_when_empty() {
     let wt_dir = dir.path().join(".worktrees");
     let acq_dir = dir.path().join("acquired");
 
-    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    let state = PoolState::scan(&wt_dir, &acq_dir, PREFIX).unwrap();
     assert_eq!(state.next_action(), PoolNextAction::WarmPool);
 }
 
@@ -228,7 +267,7 @@ fn test_next_action_ready_when_mixed() {
         &[("pool-001", "web-2")],
     );
 
-    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    let state = PoolState::scan(&wt_dir, &acq_dir, PREFIX).unwrap();
     assert_eq!(state.next_action(), PoolNextAction::Ready { available: 2 });
 }
 
@@ -241,7 +280,7 @@ fn test_next_action_exhausted_when_all_acquired() {
         &[("pool-001", "web-2"), ("pool-002", "web-3")],
     );
 
-    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    let state = PoolState::scan(&wt_dir, &acq_dir, PREFIX).unwrap();
     assert_eq!(
         state.next_action(),
         PoolNextAction::Exhausted { acquired: 2 }
@@ -253,7 +292,7 @@ fn test_next_action_all_idle_when_none_acquired() {
     let dir = TempDir::new().unwrap();
     let (wt_dir, acq_dir) = setup_pool(&dir, &["pool-001", "pool-002"], &[]);
 
-    let state = PoolState::scan(&wt_dir, &acq_dir).unwrap();
+    let state = PoolState::scan(&wt_dir, &acq_dir, PREFIX).unwrap();
     assert_eq!(
         state.next_action(),
         PoolNextAction::AllIdle { available: 2 }

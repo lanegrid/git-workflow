@@ -80,6 +80,12 @@ pub enum PoolCommands {
     /// Show pool status
     Status,
 
+    /// Release acquired worktree(s) back to the pool
+    Release {
+        /// Name of the worktree to release (defaults to all acquired)
+        name: Option<String>,
+    },
+
     /// Remove all worktrees and clean up the pool
     Drain {
         /// Force drain even if worktrees are acquired
