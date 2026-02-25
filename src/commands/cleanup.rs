@@ -37,6 +37,9 @@ pub fn run(branch_name: Option<String>, verbose: bool) -> Result<()> {
     ));
     output::info(&format!("Home branch: {}", output::bold(home_branch)));
 
+    // Determine if we need to switch branches after cleanup
+    let needs_switch = current == branch_to_delete;
+
     // Safety: check if branch is protected (compile-time typestate enforced)
     let branch = classify_branch(&branch_to_delete, &repo_type);
     let deletable_branch = branch.try_deletable()?;
@@ -50,17 +53,19 @@ pub fn run(branch_name: Option<String>, verbose: bool) -> Result<()> {
         ));
     }
 
-    // Safety check: uncommitted changes
-    let working_dir = WorkingDirState::detect();
-    if !working_dir.is_clean() {
-        output::error(&format!(
-            "You have uncommitted changes ({}).",
-            working_dir.description()
-        ));
-        println!();
-        output::action("git stash -u -m 'WIP before cleanup'");
-        output::action("git status");
-        return Err(GwError::UncommittedChanges);
+    // Safety check: uncommitted changes (only needed if switching branches)
+    if needs_switch {
+        let working_dir = WorkingDirState::detect();
+        if !working_dir.is_clean() {
+            output::error(&format!(
+                "You have uncommitted changes ({}).",
+                working_dir.description()
+            ));
+            println!();
+            output::action("git stash -u -m 'WIP before cleanup'");
+            output::action("git status");
+            return Err(GwError::UncommittedChanges);
+        }
     }
 
     // Query PR information from GitHub
@@ -81,8 +86,8 @@ pub fn run(branch_name: Option<String>, verbose: bool) -> Result<()> {
     let default_remote = git::get_default_remote_branch()?;
     let default_branch = default_remote.strip_prefix("origin/").unwrap_or("main");
 
-    // Switch to home branch first (if on the branch to delete)
-    if current == branch_to_delete {
+    // Switch to home branch first (only if on the branch to delete)
+    if needs_switch {
         if !git::branch_exists(home_branch) {
             git::checkout_new_branch(home_branch, &default_remote, verbose)?;
             output::success(&format!(
@@ -93,12 +98,12 @@ pub fn run(branch_name: Option<String>, verbose: bool) -> Result<()> {
             git::checkout(home_branch, verbose)?;
             output::success(&format!("Switched to {}", output::bold(home_branch)));
         }
-    }
 
-    // Sync home branch with default remote
-    output::info(&format!("Syncing with {}...", default_remote));
-    git::pull("origin", default_branch, verbose)?;
-    output::success("Synced");
+        // Sync home branch with default remote (only after switching)
+        output::info(&format!("Syncing with {}...", default_remote));
+        git::pull("origin", default_branch, verbose)?;
+        output::success("Synced");
+    }
 
     // Delete the local branch
     if branch_exists {
@@ -123,8 +128,15 @@ pub fn run(branch_name: Option<String>, verbose: bool) -> Result<()> {
         output::action("git stash list");
     }
 
-    output::ready("Cleanup complete", home_branch);
-    output::hints(&["mise run git:new feature/your-feature  # Create new branch"]);
+    if needs_switch {
+        output::ready("Cleanup complete", home_branch);
+        output::hints(&["mise run git:new feature/your-feature  # Create new branch"]);
+    } else {
+        output::success(&format!(
+            "Cleanup complete (stayed on {})",
+            output::bold(&current)
+        ));
+    }
 
     Ok(())
 }
