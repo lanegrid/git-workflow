@@ -157,9 +157,47 @@ fn ensure_excluded() -> Result<()> {
 
 /// Release a single pool worktree back to the pool.
 ///
-/// Just removes the acquire marker. The worktree should have been
-/// cleaned up (gw cleanup) before release.
-fn release_one(entry: &PoolEntry, acquired_dir: &Path) -> Result<()> {
+/// Resets the worktree to its home branch (= entry name) before
+/// removing the acquire marker, so the worktree is ready for reuse.
+fn release_one(entry: &PoolEntry, acquired_dir: &Path, verbose: bool) -> Result<()> {
+    let wt_path = entry.path.to_string_lossy().to_string();
+    let home_branch = &entry.name;
+
+    // Check if worktree is on a different branch than its home branch
+    let current = worktree_current_branch(&entry.path);
+    if current != *home_branch {
+        output::info(&format!(
+            "{} is on branch '{}', resetting to '{}'",
+            entry.name, current, home_branch
+        ));
+
+        // Discard any uncommitted changes
+        let _ = git::git_run_in_dir(&wt_path, &["reset", "--hard", "HEAD"], verbose);
+        let _ = git::git_run_in_dir(&wt_path, &["clean", "-fd"], verbose);
+
+        // Checkout home branch
+        git::git_run_in_dir(&wt_path, &["checkout", home_branch], verbose).map_err(|e| {
+            GwError::Other(format!(
+                "Failed to reset {} to home branch '{}': {}",
+                entry.name, home_branch, e
+            ))
+        })?;
+
+        // Delete the stale feature branch (best-effort)
+        let _ = git::git_run_in_dir(&wt_path, &["branch", "-D", &current], verbose);
+    }
+
+    // Sync home branch with latest
+    let default_remote = git::get_default_remote_branch()?;
+    let default_branch = default_remote.strip_prefix("origin/").unwrap_or("main");
+    let _ = git::git_run_in_dir(&wt_path, &["fetch", "--prune"], verbose);
+    let _ = git::git_run_in_dir(
+        &wt_path,
+        &["pull", "origin", default_branch, "--ff-only"],
+        verbose,
+    );
+
+    // Remove acquire marker
     let marker = acquired_dir.join(&entry.name);
     if marker.exists() {
         std::fs::remove_file(&marker)?;
@@ -306,12 +344,27 @@ pub fn acquire(verbose: bool) -> Result<()> {
     let owner = leader_name()?;
     std::fs::write(acquired_dir.join(&entry.name), &owner)?;
 
-    // Sync worktree to latest (gw home equivalent)
+    // Ensure worktree is on its home branch before syncing
     let wt_path = entry.path.to_string_lossy().to_string();
+    let home_branch = &entry.name;
+    let current = worktree_current_branch(&entry.path);
+    if current != *home_branch {
+        // Reset any dirty state and switch to home branch
+        let _ = git::git_run_in_dir(&wt_path, &["reset", "--hard", "HEAD"], verbose);
+        let _ = git::git_run_in_dir(&wt_path, &["clean", "-fd"], verbose);
+        git::git_run_in_dir(&wt_path, &["checkout", home_branch], verbose)?;
+        let _ = git::git_run_in_dir(&wt_path, &["branch", "-D", &current], verbose);
+    }
+
+    // Sync worktree to latest (gw home equivalent)
     git::git_run_in_dir(&wt_path, &["fetch", "--prune"], verbose)?;
     let default_remote = git::get_default_remote_branch()?;
     let default_branch = default_remote.strip_prefix("origin/").unwrap_or("main");
-    git::git_run_in_dir(&wt_path, &["pull", "origin", default_branch], verbose)?;
+    git::git_run_in_dir(
+        &wt_path,
+        &["pull", "origin", default_branch, "--ff-only"],
+        verbose,
+    )?;
 
     let path = entry.path.to_string_lossy().to_string();
     let name = entry.name.clone();
@@ -332,7 +385,7 @@ pub fn acquire(verbose: bool) -> Result<()> {
 ///
 /// Removes acquire markers. No git operations — cleanup should have
 /// been run inside the worktree before releasing.
-pub fn release(name: Option<String>, _verbose: bool) -> Result<()> {
+pub fn release(name: Option<String>, verbose: bool) -> Result<()> {
     if !git::is_git_repo() {
         return Err(GwError::NotAGitRepository);
     }
@@ -363,7 +416,7 @@ pub fn release(name: Option<String>, _verbose: bool) -> Result<()> {
                 return Err(GwError::PoolWorktreeNotAcquired(entry.name.clone()));
             }
 
-            release_one(entry, &acquired_dir)?;
+            release_one(entry, &acquired_dir, verbose)?;
         }
         None => {
             let acquired: Vec<_> = state
@@ -377,7 +430,7 @@ pub fn release(name: Option<String>, _verbose: bool) -> Result<()> {
             }
 
             for entry in &acquired {
-                release_one(entry, &acquired_dir)?;
+                release_one(entry, &acquired_dir, verbose)?;
             }
         }
     }
@@ -461,12 +514,13 @@ pub fn status(verbose: bool) -> Result<()> {
         println!("{}", "-".repeat(60));
 
         for entry in &state.entries {
-            let branch = if entry.status == WorktreeStatus::Acquired {
-                worktree_current_branch(&entry.path)
+            let branch = worktree_current_branch(&entry.path);
+            let branch_display = if branch == entry.name {
+                "(idle)".to_string()
             } else {
-                entry.branch.clone()
+                branch
             };
-            println!("{:<24} {:<12} {}", entry.name, entry.status, branch);
+            println!("{:<24} {:<12} {}", entry.name, entry.status, branch_display);
         }
     }
 

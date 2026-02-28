@@ -542,6 +542,128 @@ fn test_release_fails_when_none_acquired() {
     );
 }
 
+// --- release resets branch ---
+
+#[test]
+fn test_release_resets_worktree_to_home_branch() {
+    let origin = create_origin_repo();
+    let local = create_local_repo(origin.path());
+    let leader = leader_name_for(local.path());
+    let prefix = format!("{leader}-pool-");
+
+    run_gw(local.path(), &["worktree", "pool", "warm", "1"]);
+
+    // Acquire
+    let output = run_gw(local.path(), &["worktree", "pool", "acquire"]);
+    assert_success(&output, "acquire");
+    let wt_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    // Simulate work: create a feature branch in the acquired worktree
+    run_git(Path::new(&wt_path), &["checkout", "-b", "feature/test"]);
+    std::fs::write(Path::new(&wt_path).join("feature.txt"), "work").unwrap();
+    run_git(Path::new(&wt_path), &["add", "."]);
+    run_git(Path::new(&wt_path), &["commit", "-m", "feature work"]);
+
+    // Verify worktree is on the feature branch
+    let branch = run_git(Path::new(&wt_path), &["rev-parse", "--abbrev-ref", "HEAD"]);
+    assert_eq!(branch, "feature/test", "should be on feature branch");
+
+    // Release WITHOUT running cleanup first
+    let name = format!("{prefix}001");
+    let output = run_gw(local.path(), &["worktree", "pool", "release", &name]);
+    assert_success(&output, "release without cleanup");
+
+    // Verify worktree was reset to its home branch
+    let branch = run_git(Path::new(&wt_path), &["rev-parse", "--abbrev-ref", "HEAD"]);
+    assert_eq!(
+        branch, name,
+        "release should reset worktree to home branch '{name}', got '{branch}'"
+    );
+}
+
+#[test]
+fn test_release_all_resets_all_branches() {
+    let origin = create_origin_repo();
+    let local = create_local_repo(origin.path());
+    let leader = leader_name_for(local.path());
+    let prefix = format!("{leader}-pool-");
+
+    run_gw(local.path(), &["worktree", "pool", "warm", "2"]);
+
+    // Acquire both
+    let out1 = run_gw(local.path(), &["worktree", "pool", "acquire"]);
+    assert_success(&out1, "acquire 1");
+    let path1 = String::from_utf8_lossy(&out1.stdout).trim().to_string();
+
+    let out2 = run_gw(local.path(), &["worktree", "pool", "acquire"]);
+    assert_success(&out2, "acquire 2");
+    let path2 = String::from_utf8_lossy(&out2.stdout).trim().to_string();
+
+    // Create feature branches in both
+    run_git(Path::new(&path1), &["checkout", "-b", "feature/one"]);
+    run_git(Path::new(&path2), &["checkout", "-b", "feature/two"]);
+
+    // Release all without cleanup
+    let output = run_gw(local.path(), &["worktree", "pool", "release"]);
+    assert_success(&output, "release all");
+
+    // Both should be back on their home branches
+    let branch1 = run_git(Path::new(&path1), &["rev-parse", "--abbrev-ref", "HEAD"]);
+    let branch2 = run_git(Path::new(&path2), &["rev-parse", "--abbrev-ref", "HEAD"]);
+    assert_eq!(
+        branch1,
+        format!("{prefix}001"),
+        "worktree 1 should be on home branch"
+    );
+    assert_eq!(
+        branch2,
+        format!("{prefix}002"),
+        "worktree 2 should be on home branch"
+    );
+}
+
+#[test]
+fn test_status_shows_actual_branch_for_all_entries() {
+    let origin = create_origin_repo();
+    let local = create_local_repo(origin.path());
+    let leader = leader_name_for(local.path());
+    let prefix = format!("{leader}-pool-");
+
+    run_gw(local.path(), &["worktree", "pool", "warm", "2"]);
+
+    // Acquire one and create a feature branch
+    let output = run_gw(local.path(), &["worktree", "pool", "acquire"]);
+    assert_success(&output, "acquire");
+    let wt_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    run_git(Path::new(&wt_path), &["checkout", "-b", "feature/visible"]);
+
+    // Status should show the actual branch for the acquired worktree
+    let output = run_gw(local.path(), &["worktree", "pool", "status"]);
+    assert_success(&output, "status");
+    let out = stdout_str(&output);
+    assert!(
+        out.contains("feature/visible"),
+        "status should show actual branch 'feature/visible': {out}"
+    );
+
+    // Verbose status should show both entries with actual branches
+    let output = run_gw(local.path(), &["worktree", "pool", "status", "-v"]);
+    assert_success(&output, "status -v");
+    let out = stdout_str(&output);
+    assert!(
+        out.contains("feature/visible"),
+        "verbose status should show actual branch: {out}"
+    );
+    // The available (non-acquired) worktree should show (idle)
+    assert!(
+        out.contains("(idle)"),
+        "available worktree should show (idle): {out}"
+    );
+    // Both pool entries should be listed
+    assert!(out.contains(&format!("{prefix}001")), "output: {out}");
+    assert!(out.contains(&format!("{prefix}002")), "output: {out}");
+}
+
 // --- full workflow ---
 
 #[test]
