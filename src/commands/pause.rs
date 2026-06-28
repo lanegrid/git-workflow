@@ -1,5 +1,6 @@
 //! `gw pause` command - Pause current work by creating a WIP commit and returning to home
 
+use super::helpers;
 use crate::error::{GwError, Result};
 use crate::git;
 use crate::github;
@@ -73,12 +74,9 @@ pub fn run(message: Option<String>, verbose: bool) -> Result<()> {
         git::checkout(home_branch, verbose)?;
     }
 
-    // Sync with default remote
-    git::pull("origin", default_branch, verbose)?;
-    output::success(&format!(
-        "Switched to {} and synced",
-        output::bold(home_branch)
-    ));
+    // Sync with default remote (fast-forward only; stop on divergence)
+    helpers::pull_with_output(&default_remote, default_branch, verbose)?;
+    output::success(&format!("Switched to {}", output::bold(home_branch)));
 
     output::ready("Paused", home_branch);
     output::hints(&[
