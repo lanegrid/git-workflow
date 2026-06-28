@@ -160,7 +160,7 @@ impl NextAction {
                     output::action("Waiting: PR in review");
                 }
                 println!();
-                println!("  gh pr checks --watch    # Wait for CI");
+                println!("  gw await                # Wait for merge, then cleanup");
                 println!("  gw open                 # Open PR in browser");
             }
             NextAction::Cleanup => {
