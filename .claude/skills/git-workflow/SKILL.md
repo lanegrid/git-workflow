@@ -99,7 +99,12 @@ Three phases run automatically:
    - `MERGED` → `$GW_NOTIFY_CMD` notification → `gw cleanup <head branch>` → exit
    - `CLOSED` → message → exit
 
-Flags: `--open`, `--no-wait`, `--no-cleanup` (stop after merge), `--interval <secs>`.
+If CI fails, `gw await` stops and reports it (the PR can't merge until it's
+fixed) instead of watching forever. Fix → push → relaunch, or pass
+`--ignore-ci-failure` to keep watching regardless.
+
+Flags: `--open`, `--no-wait`, `--no-cleanup` (stop after merge),
+`--ignore-ci-failure`, `--interval <secs>`.
 
 **Singleton rule — only ONE watcher per PR:**
 

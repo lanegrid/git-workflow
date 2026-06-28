@@ -26,8 +26,17 @@ fn main() -> ExitCode {
             open,
             no_wait,
             no_cleanup,
+            ignore_ci_failure,
             interval,
-        } => commands::await_pr::run(pr, open, no_wait, no_cleanup, interval, cli.verbose),
+        } => commands::await_pr::run(
+            pr,
+            open,
+            no_wait,
+            no_cleanup,
+            ignore_ci_failure,
+            interval,
+            cli.verbose,
+        ),
         Commands::Worktree { command } => match command {
             WorktreeCommands::Pool { command } => match command {
                 PoolCommands::Warm { count } => commands::worktree_pool::warm(count, cli.verbose),

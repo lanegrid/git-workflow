@@ -36,6 +36,7 @@ pub fn run(
     open_browser: bool,
     no_wait: bool,
     no_cleanup: bool,
+    ignore_ci_failure: bool,
     interval: u64,
     verbose: bool,
 ) -> Result<()> {
@@ -90,10 +91,11 @@ pub fn run(
         PrState::Open => {}
     }
 
-    // Phase 1: wait for CI.
+    // Phase 1: wait for CI. A CI failure stops here (the PR won't merge until
+    // it's fixed) unless the user opted into watching anyway.
     if !no_wait {
         output::info(&format!("Waiting for CI checks on PR #{}...", pr.number));
-        wait_for_ci(pr.number, verbose);
+        wait_for_ci(pr.number, ignore_ci_failure, verbose)?;
     }
 
     // Phase 2: poll until the PR reaches a terminal state.
@@ -148,18 +150,32 @@ fn finish_merged(head_branch: &str, no_cleanup: bool, verbose: bool) -> Result<(
 
 /// Wait for CI checks to finish by delegating to `gh pr checks --watch`.
 ///
-/// A non-zero exit (failed/missing checks) is not fatal: the PR may still be
-/// mergeable, so we warn and continue to the merge watch.
-fn wait_for_ci(pr_number: u64, verbose: bool) {
+/// A non-zero exit means the checks did not all pass. Since the PR won't merge
+/// until that's fixed, continuing to the merge watch would just block forever,
+/// so by default we stop and report the failure. `ignore_ci_failure` restores
+/// the old "warn and keep watching" behavior for callers that want it.
+fn wait_for_ci(pr_number: u64, ignore_ci_failure: bool, verbose: bool) -> Result<()> {
     let num = pr_number.to_string();
     let args = ["pr", "checks", &num, "--watch"];
     if verbose {
         output::action(&format!("gh {}", args.join(" ")));
     }
     match Command::new("gh").args(args).status() {
-        Ok(status) if status.success() => output::success("CI checks passed"),
-        Ok(_) => output::warn("CI checks did not all pass — continuing anyway"),
-        Err(e) => output::warn(&format!("Could not watch CI checks: {} — continuing", e)),
+        Ok(status) if status.success() => {
+            output::success("CI checks passed");
+            Ok(())
+        }
+        Ok(_) if ignore_ci_failure => {
+            output::warn("CI checks did not all pass — continuing anyway (--ignore-ci-failure)");
+            Ok(())
+        }
+        Ok(_) => Err(GwError::Other(format!(
+            "CI checks for PR #{pr_number} did not all pass. Fix the PR, push again, then rerun \
+             `gw await {pr_number} --open` (or pass --ignore-ci-failure to watch regardless)."
+        ))),
+        Err(e) => Err(GwError::Other(format!(
+            "Could not watch CI checks for PR #{pr_number}: {e}"
+        ))),
     }
 }
 
