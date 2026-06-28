@@ -84,19 +84,12 @@ branches, and cleans up *that PR's* head branch on merge.
 [Bash(run_in_background=true)] gw await <pr#> --open
 ```
 
-It runs, in order:
+It waits for CI, then (with `--open`) opens the PR, watches it to merge, and
+runs `gw cleanup` — hands-off. **If CI fails it stops and reports**, so you fix
+→ push → rerun `await` (or pass `--ignore-ci-failure` to watch regardless).
 
-0. **Browser open** *(only with `--open`)* — opens the PR page up front, before waiting.
-1. **CI wait** — `gh pr checks --watch` (skip with `--no-wait`).
-2. **Merge watch** — polls every `--interval`s (default 30):
-   - `MERGED` → `$GW_NOTIFY_CMD` notification → `gw cleanup <head branch>` → exit
-   - `CLOSED` → `$GW_NOTIFY_CMD` notification → exit
-
-If CI fails, `gw await` stops and reports it instead of watching forever. Fix →
-push → relaunch, or pass `--ignore-ci-failure` to keep watching regardless.
-
-Flags: `--open`, `--no-wait`, `--no-cleanup` (stop after merge),
-`--ignore-ci-failure`, `--interval <secs>`.
+Flags: `--open`, `--no-wait` (skip the CI wait), `--no-cleanup` (stop after
+merge), `--ignore-ci-failure`, `--interval <secs>`.
 
 **One watcher per PR.** Launch `gw await <pr#>` once, after the final push. If CI
 fails and you must push a fix, **stop the existing watcher with `TaskStop`
