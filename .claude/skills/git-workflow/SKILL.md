@@ -192,8 +192,3 @@ chore: bump version to 0.6.0
   configured via env in your dotfiles, not the CLI:
   - `GW_OPEN_URL_CMD` → script that opens a URL (e.g. a dedicated Chrome profile)
   - `GW_NOTIFY_CMD` → script that shows a notification (e.g. macOS `osascript`)
-
-> **Dogfooding note (optional):** in the main worktree you can run
-> `mise run cleanup` instead of `gw cleanup` to also reinstall `gw` after the
-> branch is deleted. The skill itself only uses `gw cleanup`; this is a repo-local
-> convenience, not part of the workflow.
