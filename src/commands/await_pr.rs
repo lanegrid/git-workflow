@@ -148,14 +148,43 @@ fn finish_merged(head_branch: &str, no_cleanup: bool, verbose: bool) -> Result<(
     cleanup::run(Some(head_branch.to_string()), verbose)
 }
 
-/// Wait for CI checks to finish by delegating to `gh pr checks --watch`.
+/// Seconds to keep polling for CI checks to *register* before proceeding
+/// without a CI wait (e.g. a repo with no CI configured for this PR).
+const CHECKS_REGISTER_TIMEOUT_SECS: u64 = 90;
+/// Seconds between polls while waiting for checks to register.
+const CHECKS_REGISTER_POLL_SECS: u64 = 3;
+
+/// Whether CI checks have shown up for a PR yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChecksPresence {
+    /// At least one check exists (passed, pending, or failed).
+    Present,
+    /// No checks reported yet — CI may simply not have started.
+    None,
+}
+
+/// Wait for CI checks to finish, then report whether they passed.
 ///
-/// A non-zero exit means the checks did not all pass. Since the PR won't merge
-/// until that's fixed, continuing to the merge watch would just block forever,
-/// so by default we stop and report the failure. `ignore_ci_failure` restores
-/// the old "warn and keep watching" behavior for callers that want it.
+/// `gh pr checks --watch` bails immediately with "no checks reported" when CI
+/// hasn't registered any checks yet — common in the seconds right after a PR is
+/// opened, which is exactly when `await` is meant to be launched. Treating that
+/// as a failure meant `await` could stop without ever waiting for CI. So we
+/// first poll until checks appear, *then* watch them. If none register within
+/// the timeout (e.g. no CI on this repo), we proceed without waiting.
+///
+/// Once checks exist, a non-zero `--watch` exit means they didn't all pass.
+/// Since the PR can't merge until that's fixed, we stop and report the failure
+/// by default; `ignore_ci_failure` downgrades it to a warning and continues.
 fn wait_for_ci(pr_number: u64, ignore_ci_failure: bool, verbose: bool) -> Result<()> {
     let num = pr_number.to_string();
+
+    if !wait_for_checks_to_register(&num, verbose)? {
+        output::warn(&format!(
+            "No CI checks registered for PR #{num} — nothing to wait for."
+        ));
+        return Ok(());
+    }
+
     let args = ["pr", "checks", &num, "--watch"];
     if verbose {
         output::action(&format!("gh {}", args.join(" ")));
@@ -176,6 +205,63 @@ fn wait_for_ci(pr_number: u64, ignore_ci_failure: bool, verbose: bool) -> Result
         Err(e) => Err(GwError::Other(format!(
             "Could not watch CI checks for PR #{pr_number}: {e}"
         ))),
+    }
+}
+
+/// Poll until CI checks register for the PR, so the subsequent `--watch` has
+/// something to watch instead of exiting instantly.
+///
+/// Returns `true` once checks are present, or `false` if none appear within
+/// `CHECKS_REGISTER_TIMEOUT_SECS` (so the caller can proceed without a wait).
+fn wait_for_checks_to_register(pr: &str, verbose: bool) -> Result<bool> {
+    let mut waited = 0;
+    loop {
+        if matches!(query_checks_presence(pr, verbose)?, ChecksPresence::Present) {
+            return Ok(true);
+        }
+        if waited >= CHECKS_REGISTER_TIMEOUT_SECS {
+            return Ok(false);
+        }
+        if waited == 0 {
+            output::info("Waiting for CI checks to register...");
+        }
+        thread::sleep(Duration::from_secs(CHECKS_REGISTER_POLL_SECS));
+        waited += CHECKS_REGISTER_POLL_SECS;
+    }
+}
+
+/// Ask `gh` whether any CI checks exist for the PR yet (without watching).
+fn query_checks_presence(pr: &str, verbose: bool) -> Result<ChecksPresence> {
+    let args = ["pr", "checks", pr];
+    if verbose {
+        output::action(&format!("gh {}", args.join(" ")));
+    }
+    let output = Command::new("gh")
+        .args(args)
+        .output()
+        .map_err(|e| GwError::Other(format!("Could not query CI checks for PR #{pr}: {e}")))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Ok(classify_checks_presence(
+        output.status.success(),
+        output.status.code(),
+        &stderr,
+    ))
+}
+
+/// Classify a `gh pr checks` (no `--watch`) result into whether checks exist.
+///
+/// Exit 0 (all passed) or 8 (pending) means checks are present. Exit 1 with a
+/// "no checks reported" message means none have registered yet. Any other
+/// failure is treated as "present" so the real status surfaces under `--watch`
+/// rather than being mistaken for a no-CI repo.
+fn classify_checks_presence(success: bool, code: Option<i32>, stderr: &str) -> ChecksPresence {
+    if success || code == Some(8) {
+        return ChecksPresence::Present;
+    }
+    if stderr.contains("no checks reported") {
+        ChecksPresence::None
+    } else {
+        ChecksPresence::Present
     }
 }
 
@@ -214,5 +300,50 @@ fn notify(message: &str, verbose: bool) {
     }
     if let Err(e) = Command::new(&cmd).arg(message).status() {
         output::warn(&format!("Notify command '{}' failed: {}", cmd, e));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_passed_means_checks_present() {
+        assert_eq!(
+            classify_checks_presence(true, Some(0), ""),
+            ChecksPresence::Present
+        );
+    }
+
+    #[test]
+    fn pending_exit_code_means_checks_present() {
+        // `gh pr checks` exits 8 while checks are still running.
+        assert_eq!(
+            classify_checks_presence(false, Some(8), ""),
+            ChecksPresence::Present
+        );
+    }
+
+    #[test]
+    fn no_checks_reported_means_none_yet() {
+        // The race right after PR creation: CI hasn't registered any checks.
+        assert_eq!(
+            classify_checks_presence(
+                false,
+                Some(1),
+                "no checks reported on the 'feature/x' branch"
+            ),
+            ChecksPresence::None
+        );
+    }
+
+    #[test]
+    fn other_failure_is_treated_as_present() {
+        // A genuine check failure must not be mistaken for "no CI" — let
+        // `--watch` surface it as a failure instead.
+        assert_eq!(
+            classify_checks_presence(false, Some(1), "1 failing check"),
+            ChecksPresence::Present
+        );
     }
 }

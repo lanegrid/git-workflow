@@ -87,7 +87,10 @@ branches, and cleans up *that PR's* head branch on merge.
 It runs, in order:
 
 0. **Browser open** *(only with `--open`)* — opens the PR page up front, before waiting.
-1. **CI wait** — `gh pr checks --watch` (skip with `--no-wait`).
+1. **CI wait** — waits for checks to **register first** (CI often hasn't started
+   in the seconds right after `gh pr create`), then `gh pr checks --watch` until
+   they finish. Skip with `--no-wait`. If no checks ever register, it proceeds
+   without waiting rather than hanging.
 2. **Merge watch** — polls every `--interval`s (default 30):
    - `MERGED` → `$GW_NOTIFY_CMD` notification → `gw cleanup <head branch>` → exit
    - `CLOSED` → `$GW_NOTIFY_CMD` notification → exit
