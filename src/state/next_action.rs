@@ -128,7 +128,7 @@ impl NextAction {
             NextAction::StartNewWork => {
                 output::action("Next: start new work");
                 println!();
-                println!("  mise run git:new feature/your-feature");
+                println!("  gw new feature/your-feature");
             }
             NextAction::SyncHomeWithUpstream { behind_count } => {
                 output::action(&format!(
@@ -136,7 +136,7 @@ impl NextAction {
                     behind_count
                 ));
                 println!();
-                println!("  mise run git:home");
+                println!("  gw home");
             }
             NextAction::CommitChanges => {
                 output::action("Next: commit changes");
@@ -156,17 +156,22 @@ impl NextAction {
             NextAction::WaitingForReview { pr_number } => {
                 if *pr_number > 0 {
                     output::action(&format!("Waiting: PR #{} in review", pr_number));
+                    println!();
+                    println!(
+                        "  gw await {} --open  # Wait for merge, then cleanup",
+                        pr_number
+                    );
+                    println!("  gw open             # Open PR in browser");
                 } else {
                     output::action("Waiting: PR in review");
+                    println!();
+                    println!("  gw open  # Open PR in browser");
                 }
-                println!();
-                println!("  gw await                # Wait for merge, then cleanup");
-                println!("  gw open                 # Open PR in browser");
             }
             NextAction::Cleanup => {
                 output::action("Next: cleanup merged branch");
                 println!();
-                println!("  mise run git:cleanup");
+                println!("  gw cleanup");
             }
             NextAction::RebaseNeeded => {
                 output::action("Next: rebase on latest main");
@@ -189,12 +194,12 @@ impl NextAction {
                 println!("  gh pr reopen {}", pr_number);
                 println!();
                 println!("  # Option 2: Cleanup and start fresh");
-                println!("  mise run git:cleanup");
+                println!("  gw cleanup");
             }
             NextAction::SyncNeeded { base_branch } => {
                 output::action(&format!("Next: sync (base '{}' was merged)", base_branch));
                 println!();
-                println!("  mise run git:sync");
+                println!("  gw sync");
             }
         }
 
