@@ -33,15 +33,16 @@ Parse `$ARGUMENTS` and execute the appropriate workflow:
 2. Run `mise run verify` to check code quality
 3. Push branch: `git push -u origin <branch>`
 4. Create PR: `gh pr create --fill` or with provided title
-5. Watch it to completion: launch `gw await` as a background task (see `await`)
+5. Open it and watch to completion: launch `gw await --open` as a background task (see `await`)
 
 ### `await` - Watch the PR to completion, then clean up
 
 Run from the feature branch — best launched as a background task right after
-the PR is created:
+the PR is created. Use `--open` so it opens the PR in the browser first, then
+watches:
 
 ```
-[Bash(run_in_background=true)] gw await
+[Bash(run_in_background=true)] gw await --open
 ```
 
 Three phases run automatically:
@@ -126,11 +127,11 @@ directory state, upstream sync state, and PR state, then suggests what to do:
 /git-workflow new feature/add-command
 ```
 
-**Create PR, then watch it to completion:**
+**Create PR, then open + watch it to completion:**
 ```
 /git-workflow pr "Add new command for X"
 # then, in the background:
-gw await
+gw await --open
 ```
 
 **Clean up after PR merged (manual):**
