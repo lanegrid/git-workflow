@@ -2,7 +2,7 @@
 name: git-workflow
 description: Development workflow using gw CLI for feature branches, PRs, and cleanup
 argument-hint: <command> [args]
-allowed-tools: Bash(gw*), Bash(git-workflow*), Bash(gh*), Bash(git*), Bash(mise*), Bash(cargo*), Bash(open*), Read, Edit, Grep, Glob
+allowed-tools: Bash(gw*), Bash(git-workflow*), Bash(gh*), Bash(git*), Bash(mise*), Bash(cargo*), Read, Edit, Grep, Glob
 ---
 
 # git-workflow Development
