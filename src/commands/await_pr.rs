@@ -10,10 +10,15 @@
 //! working a stacked PR), and lets the post-merge cleanup target the PR's own
 //! head branch rather than whatever happens to be checked out.
 //!
-//! Phases:
-//! 1. Wait for CI       — `gh pr checks --watch` (skip with `--no-wait`)
-//! 2. Watch for merge   — poll the PR state every `--interval` seconds
-//! 3. On merge          — notify, then `gw cleanup <head branch>` (skip with `--no-cleanup`)
+//! State machine:
+//!
+//! - Wait for CI: poll until the checks reach a verdict (skip with `--no-wait`).
+//!   "Not registered yet" and "pending" are both just *keep waiting*; only
+//!   pass/fail are terminal.
+//! - On CI pass: open the PR in the browser (with `--open`), then watch for merge.
+//! - On CI fail: report and stop, so you can fix → push → rerun `await`.
+//! - Watch for merge: poll the PR state every `--interval` seconds.
+//! - On merge: notify, then `gw cleanup <head branch>` (skip with `--no-cleanup`).
 //!
 //! Environment-specific behavior stays in the user's dotfiles, not the CLI:
 //! - `--open` opens the URL via `GW_OPEN_URL_CMD`/`OPEN_URL_CMD` (see `gw open`)
@@ -67,14 +72,6 @@ pub fn run(
 
     output::info(&format!("PR: #{} {}", pr.number, pr.title));
 
-    // Optionally open in the browser up front.
-    if open_browser {
-        match open::open_url(&pr.url, verbose) {
-            Ok(()) => output::success(&format!("Opened {}", pr.url)),
-            Err(e) => output::warn(&format!("Could not open browser: {}", e)),
-        }
-    }
-
     // If the PR is already terminal, handle it without watching.
     match &pr.state {
         PrState::Merged { .. } => {
@@ -91,14 +88,21 @@ pub fn run(
         PrState::Open => {}
     }
 
-    // Phase 1: wait for CI. A CI failure stops here (the PR won't merge until
+    // Phase 1: wait for CI. A CI failure stops here (the PR can't merge until
     // it's fixed) unless the user opted into watching anyway.
     if !no_wait {
-        output::info(&format!("Waiting for CI checks on PR #{}...", pr.number));
-        wait_for_ci(pr.number, ignore_ci_failure, verbose)?;
+        wait_for_ci(pr.number, ignore_ci_failure, interval, verbose)?;
     }
 
-    // Phase 2: poll until the PR reaches a terminal state.
+    // Phase 2: CI is green (or skipped) — surface the PR for review/merge.
+    if open_browser {
+        match open::open_url(&pr.url, verbose) {
+            Ok(()) => output::success(&format!("Opened {}", pr.url)),
+            Err(e) => output::warn(&format!("Could not open browser: {}", e)),
+        }
+    }
+
+    // Phase 3: poll until the PR reaches a terminal state.
     let poll_secs = interval.max(1);
     output::info(&format!(
         "Watching PR #{} for merge (every {}s)...",
@@ -106,7 +110,7 @@ pub fn run(
     ));
     let terminal = poll_until_terminal(pr.number, poll_secs);
 
-    // Phase 3: react to the terminal state.
+    // Phase 4: react to the terminal state.
     match terminal {
         PrState::Merged { .. } => {
             output::success(&format!("PR #{} merged!", pr.number));
@@ -148,90 +152,65 @@ fn finish_merged(head_branch: &str, no_cleanup: bool, verbose: bool) -> Result<(
     cleanup::run(Some(head_branch.to_string()), verbose)
 }
 
-/// Seconds to keep polling for CI checks to *register* before proceeding
-/// without a CI wait (e.g. a repo with no CI configured for this PR).
-const CHECKS_REGISTER_TIMEOUT_SECS: u64 = 90;
-/// Seconds between polls while waiting for checks to register.
-const CHECKS_REGISTER_POLL_SECS: u64 = 3;
-
-/// Whether CI checks have shown up for a PR yet.
+/// Where a PR's CI checks are in their lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ChecksPresence {
-    /// At least one check exists (passed, pending, or failed).
-    Present,
-    /// No checks reported yet — CI may simply not have started.
-    None,
+enum CiState {
+    /// No checks reported yet — CI may not have started. Keep waiting.
+    NotStarted,
+    /// Checks exist but haven't all finished. Keep waiting.
+    Pending,
+    /// All checks passed. Terminal.
+    Passed,
+    /// At least one check failed. Terminal.
+    Failed,
 }
 
-/// Wait for CI checks to finish, then report whether they passed.
+/// Wait for CI to reach a verdict, then report pass/fail.
 ///
-/// `gh pr checks --watch` bails immediately with "no checks reported" when CI
-/// hasn't registered any checks yet — common in the seconds right after a PR is
-/// opened, which is exactly when `await` is meant to be launched. Treating that
-/// as a failure meant `await` could stop without ever waiting for CI. So we
-/// first poll until checks appear, *then* watch them. If none register within
-/// the timeout (e.g. no CI on this repo), we proceed without waiting.
+/// This is a plain state machine: poll the PR's checks until they settle.
+/// `NotStarted` (the "no checks reported" window right after a PR opens — when
+/// `await` is meant to be launched) and `Pending` are both just *keep waiting*;
+/// only `Passed`/`Failed` end the loop. There is deliberately **no** timeout —
+/// "wait for CI" means wait for CI. A repo with genuinely no CI should use
+/// `--no-wait` instead.
 ///
-/// Once checks exist, a non-zero `--watch` exit means they didn't all pass.
-/// Since the PR can't merge until that's fixed, we stop and report the failure
-/// by default; `ignore_ci_failure` downgrades it to a warning and continues.
-fn wait_for_ci(pr_number: u64, ignore_ci_failure: bool, verbose: bool) -> Result<()> {
+/// On `Failed`, the PR can't merge until it's fixed, so we stop and report it
+/// by default; `ignore_ci_failure` downgrades that to a warning and continues.
+fn wait_for_ci(
+    pr_number: u64,
+    ignore_ci_failure: bool,
+    interval: u64,
+    verbose: bool,
+) -> Result<()> {
     let num = pr_number.to_string();
-
-    if !wait_for_checks_to_register(&num, verbose)? {
-        output::warn(&format!(
-            "No CI checks registered for PR #{num} — nothing to wait for."
-        ));
-        return Ok(());
-    }
-
-    let args = ["pr", "checks", &num, "--watch"];
-    if verbose {
-        output::action(&format!("gh {}", args.join(" ")));
-    }
-    match Command::new("gh").args(args).status() {
-        Ok(status) if status.success() => {
-            output::success("CI checks passed");
-            Ok(())
-        }
-        Ok(_) if ignore_ci_failure => {
-            output::warn("CI checks did not all pass — continuing anyway (--ignore-ci-failure)");
-            Ok(())
-        }
-        Ok(_) => Err(GwError::Other(format!(
-            "CI checks for PR #{pr_number} did not all pass. Fix the PR, push again, then rerun \
-             `gw await {pr_number} --open` (or pass --ignore-ci-failure to watch regardless)."
-        ))),
-        Err(e) => Err(GwError::Other(format!(
-            "Could not watch CI checks for PR #{pr_number}: {e}"
-        ))),
-    }
-}
-
-/// Poll until CI checks register for the PR, so the subsequent `--watch` has
-/// something to watch instead of exiting instantly.
-///
-/// Returns `true` once checks are present, or `false` if none appear within
-/// `CHECKS_REGISTER_TIMEOUT_SECS` (so the caller can proceed without a wait).
-fn wait_for_checks_to_register(pr: &str, verbose: bool) -> Result<bool> {
-    let mut waited = 0;
+    let delay = Duration::from_secs(interval.max(1));
+    output::info(&format!("Waiting for CI checks on PR #{num}..."));
     loop {
-        if matches!(query_checks_presence(pr, verbose)?, ChecksPresence::Present) {
-            return Ok(true);
+        match query_ci_state(&num, verbose)? {
+            CiState::NotStarted | CiState::Pending => thread::sleep(delay),
+            CiState::Passed => {
+                output::success("CI checks passed");
+                return Ok(());
+            }
+            CiState::Failed if ignore_ci_failure => {
+                output::warn(
+                    "CI checks did not all pass — continuing anyway (--ignore-ci-failure)",
+                );
+                return Ok(());
+            }
+            CiState::Failed => {
+                return Err(GwError::Other(format!(
+                    "CI checks for PR #{pr_number} did not all pass. Fix the PR, push again, then \
+                     rerun `gw await {pr_number} --open` (or pass --ignore-ci-failure to watch \
+                     regardless)."
+                )));
+            }
         }
-        if waited >= CHECKS_REGISTER_TIMEOUT_SECS {
-            return Ok(false);
-        }
-        if waited == 0 {
-            output::info("Waiting for CI checks to register...");
-        }
-        thread::sleep(Duration::from_secs(CHECKS_REGISTER_POLL_SECS));
-        waited += CHECKS_REGISTER_POLL_SECS;
     }
 }
 
-/// Ask `gh` whether any CI checks exist for the PR yet (without watching).
-fn query_checks_presence(pr: &str, verbose: bool) -> Result<ChecksPresence> {
+/// Query the PR's current CI state via `gh pr checks` (no `--watch`).
+fn query_ci_state(pr: &str, verbose: bool) -> Result<CiState> {
     let args = ["pr", "checks", pr];
     if verbose {
         output::action(&format!("gh {}", args.join(" ")));
@@ -241,28 +220,32 @@ fn query_checks_presence(pr: &str, verbose: bool) -> Result<ChecksPresence> {
         .output()
         .map_err(|e| GwError::Other(format!("Could not query CI checks for PR #{pr}: {e}")))?;
     let stderr = String::from_utf8_lossy(&output.stderr);
-    Ok(classify_checks_presence(
+    Ok(classify_ci_state(
         output.status.success(),
         output.status.code(),
         &stderr,
     ))
 }
 
-/// Classify a `gh pr checks` (no `--watch`) result into whether checks exist.
+/// Classify a `gh pr checks` (no `--watch`) result into a [`CiState`].
 ///
-/// Exit 0 (all passed) or 8 (pending) means checks are present. Exit 1 with a
-/// "no checks reported" message means none have registered yet. Any other
-/// failure is treated as "present" so the real status surfaces under `--watch`
-/// rather than being mistaken for a no-CI repo.
-fn classify_checks_presence(success: bool, code: Option<i32>, stderr: &str) -> ChecksPresence {
-    if success || code == Some(8) {
-        return ChecksPresence::Present;
+/// `gh` exit codes: 0 = all passed, 8 = some pending, 1 = failed *or* no checks
+/// reported (disambiguated by stderr). Anything else is treated as still
+/// pending so a transient `gh` hiccup retries rather than aborting the wait.
+fn classify_ci_state(success: bool, code: Option<i32>, stderr: &str) -> CiState {
+    if success {
+        return CiState::Passed;
+    }
+    if code == Some(8) {
+        return CiState::Pending;
     }
     if stderr.contains("no checks reported") {
-        ChecksPresence::None
-    } else {
-        ChecksPresence::Present
+        return CiState::NotStarted;
     }
+    if code == Some(1) {
+        return CiState::Failed;
+    }
+    CiState::Pending
 }
 
 /// Poll the PR state until it is merged or closed.
@@ -308,42 +291,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_passed_means_checks_present() {
-        assert_eq!(
-            classify_checks_presence(true, Some(0), ""),
-            ChecksPresence::Present
-        );
+    fn exit_zero_means_passed() {
+        assert_eq!(classify_ci_state(true, Some(0), ""), CiState::Passed);
     }
 
     #[test]
-    fn pending_exit_code_means_checks_present() {
+    fn exit_eight_means_pending() {
         // `gh pr checks` exits 8 while checks are still running.
-        assert_eq!(
-            classify_checks_presence(false, Some(8), ""),
-            ChecksPresence::Present
-        );
+        assert_eq!(classify_ci_state(false, Some(8), ""), CiState::Pending);
     }
 
     #[test]
-    fn no_checks_reported_means_none_yet() {
-        // The race right after PR creation: CI hasn't registered any checks.
+    fn no_checks_reported_means_not_started() {
+        // The window right after PR creation: CI hasn't registered any checks.
+        // This must keep waiting, not be mistaken for a failure.
         assert_eq!(
-            classify_checks_presence(
+            classify_ci_state(
                 false,
                 Some(1),
                 "no checks reported on the 'feature/x' branch"
             ),
-            ChecksPresence::None
+            CiState::NotStarted
         );
     }
 
     #[test]
-    fn other_failure_is_treated_as_present() {
-        // A genuine check failure must not be mistaken for "no CI" — let
-        // `--watch` surface it as a failure instead.
+    fn exit_one_with_checks_means_failed() {
         assert_eq!(
-            classify_checks_presence(false, Some(1), "1 failing check"),
-            ChecksPresence::Present
+            classify_ci_state(false, Some(1), "1 failing check"),
+            CiState::Failed
+        );
+    }
+
+    #[test]
+    fn unknown_failure_retries_as_pending() {
+        // A transient gh hiccup (e.g. network) shouldn't abort the wait.
+        assert_eq!(
+            classify_ci_state(false, None, "could not connect"),
+            CiState::Pending
         );
     }
 }

@@ -84,19 +84,18 @@ branches, and cleans up *that PR's* head branch on merge.
 [Bash(run_in_background=true)] gw await <pr#> --open
 ```
 
-It runs, in order:
+It's a state machine:
 
-0. **Browser open** *(only with `--open`)* — opens the PR page up front, before waiting.
-1. **CI wait** — waits for checks to **register first** (CI often hasn't started
-   in the seconds right after `gh pr create`), then `gh pr checks --watch` until
-   they finish. Skip with `--no-wait`. If no checks ever register, it proceeds
-   without waiting rather than hanging.
-2. **Merge watch** — polls every `--interval`s (default 30):
+1. **Wait for CI** *(skip with `--no-wait`)* — polls until the checks reach a
+   verdict. "Not registered yet" (the window right after `gh pr create`) and
+   "pending" both just mean *keep waiting*; only pass/fail end the wait. There's
+   no timeout — for a repo with genuinely no CI, use `--no-wait`.
+   - **CI fails** → stop and report, so you can fix → push → rerun `await`
+     (or pass `--ignore-ci-failure` to watch regardless).
+2. **CI passes** → **open the PR in the browser** *(only with `--open`)*, then:
+3. **Watch for merge** — polls every `--interval`s (default 30):
    - `MERGED` → `$GW_NOTIFY_CMD` notification → `gw cleanup <head branch>` → exit
    - `CLOSED` → `$GW_NOTIFY_CMD` notification → exit
-
-If CI fails, `gw await` stops and reports it instead of watching forever. Fix →
-push → relaunch, or pass `--ignore-ci-failure` to keep watching regardless.
 
 Flags: `--open`, `--no-wait`, `--no-cleanup` (stop after merge),
 `--ignore-ci-failure`, `--interval <secs>`.
