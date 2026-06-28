@@ -59,6 +59,15 @@ pub enum GwError {
     #[error("Worktree '{0}' is not acquired")]
     PoolWorktreeNotAcquired(String),
 
+    #[error("Worktree '{name}' is not in a clean state to return to the pool: {reason}")]
+    PoolWorktreeDirty { name: String, reason: String },
+
+    #[error(
+        "No clean worktree available to acquire (all available worktrees are dirty). \
+         Inspect them, then run `gw worktree pool drain --force` and `gw worktree pool warm <n>`."
+    )]
+    PoolNoCleanWorktree,
+
     #[error("Could not acquire pool lock within timeout")]
     PoolLockTimeout,
 

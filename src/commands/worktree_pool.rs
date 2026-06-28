@@ -120,17 +120,89 @@ fn run_setup_hook(repo_root: &Path, worktree_path: &str, verbose: bool) -> Resul
     Ok(())
 }
 
-/// Get the current branch of a worktree by running git in that directory
-fn worktree_current_branch(path: &Path) -> String {
-    let path_str = path.to_string_lossy();
+/// Run a git command inside `path`, returning trimmed stdout on success.
+fn git_capture(path: &Path, args: &[&str]) -> Option<String> {
     std::process::Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(&*path_str)
+        .args(args)
+        .current_dir(path)
         .output()
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|| "???".to_string())
+}
+
+/// Get the current branch of a worktree by running git in that directory
+fn worktree_current_branch(path: &Path) -> String {
+    git_capture(path, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_else(|| "???".to_string())
+}
+
+/// Detect an in-progress git operation (rebase/merge/cherry-pick/...) in a
+/// worktree by probing the well-known state files in its git dir.
+fn in_progress_operation(path: &Path) -> Option<String> {
+    // (git-path, human label)
+    const PROBES: &[(&str, &str)] = &[
+        ("rebase-merge", "rebase"),
+        ("rebase-apply", "rebase"),
+        ("MERGE_HEAD", "merge"),
+        ("CHERRY_PICK_HEAD", "cherry-pick"),
+        ("REVERT_HEAD", "revert"),
+        ("BISECT_LOG", "bisect"),
+    ];
+    for (git_path, label) in PROBES {
+        if let Some(resolved) = git_capture(path, &["rev-parse", "--git-path", git_path]) {
+            let candidate = PathBuf::from(&resolved);
+            let full = if candidate.is_absolute() {
+                candidate
+            } else {
+                path.join(candidate)
+            };
+            if full.exists() {
+                return Some((*label).to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Inspect a pool worktree and return the reasons it is NOT in a clean,
+/// returnable state. An empty vec means the worktree is clean:
+///
+/// - checked out on its pool home branch (== entry name),
+/// - no staged/unstaged/untracked changes,
+/// - no in-progress git operation (rebase/merge/cherry-pick/...).
+///
+/// Sync state is intentionally not checked: being behind `origin` is fine
+/// because `acquire` fast-forwards the worktree before handing it out.
+fn worktree_issues(entry: &PoolEntry) -> Vec<String> {
+    let path = entry.path.as_path();
+    let mut issues = Vec::new();
+
+    if !path.exists() {
+        issues.push("worktree directory is missing".to_string());
+        return issues;
+    }
+
+    let branch = worktree_current_branch(path);
+    if branch != entry.branch {
+        issues.push(format!(
+            "on branch '{}', expected pool home branch '{}'",
+            branch, entry.branch
+        ));
+    }
+
+    match git_capture(path, &["status", "--porcelain"]) {
+        Some(s) if !s.trim().is_empty() => {
+            issues.push("has uncommitted or untracked changes".to_string());
+        }
+        None => issues.push("could not read working tree status".to_string()),
+        _ => {}
+    }
+
+    if let Some(op) = in_progress_operation(path) {
+        issues.push(format!("a {op} is in progress"));
+    }
+
+    issues
 }
 
 /// Ensure `.worktrees/` is excluded via `.git/info/exclude`.
@@ -300,7 +372,33 @@ pub fn acquire(verbose: bool) -> Result<()> {
         return Err(GwError::PoolNotInitialized);
     }
 
-    let entry = state.find_available().ok_or(GwError::PoolExhausted)?;
+    // Inspect each available worktree before handing one out. A dirty available
+    // worktree (e.g. left behind by an agent that crashed without a clean
+    // release) must not be loaned to the next agent — skip it with a warning.
+    // This is the CLI-side last line of defense; release is the first.
+    let available: Vec<&PoolEntry> = state
+        .entries
+        .iter()
+        .filter(|e| e.status == WorktreeStatus::Available)
+        .collect();
+    if available.is_empty() {
+        return Err(GwError::PoolExhausted);
+    }
+    let mut entry = None;
+    for candidate in &available {
+        let issues = worktree_issues(candidate);
+        if issues.is_empty() {
+            entry = Some(*candidate);
+            break;
+        }
+        // Warnings go to stderr so stdout stays "path only".
+        eprintln!(
+            "\x1b[0;33m\u{26a0}\x1b[0m Skipping unclean worktree {}: {}",
+            candidate.name,
+            issues.join("; ")
+        );
+    }
+    let entry = entry.ok_or(GwError::PoolNoCleanWorktree)?;
 
     // Create marker file with leader name as owner
     let owner = leader_name()?;
@@ -363,6 +461,16 @@ pub fn release(name: Option<String>, _verbose: bool) -> Result<()> {
                 return Err(GwError::PoolWorktreeNotAcquired(entry.name.clone()));
             }
 
+            // Inspect before returning to the pool: an explicitly-named dirty
+            // worktree is a hard error so the caller notices and fixes it.
+            let issues = worktree_issues(entry);
+            if !issues.is_empty() {
+                return Err(GwError::PoolWorktreeDirty {
+                    name: entry.name.clone(),
+                    reason: issues.join("; "),
+                });
+            }
+
             release_one(entry, &acquired_dir)?;
         }
         None => {
@@ -376,8 +484,26 @@ pub fn release(name: Option<String>, _verbose: bool) -> Result<()> {
                 return Err(GwError::PoolNoneAcquired);
             }
 
+            // Release every clean worktree; keep the dirty ones acquired (so
+            // their work can be inspected) and report them at the end.
+            let mut skipped = Vec::new();
             for entry in &acquired {
-                release_one(entry, &acquired_dir)?;
+                let issues = worktree_issues(entry);
+                if issues.is_empty() {
+                    release_one(entry, &acquired_dir)?;
+                } else {
+                    output::warn(&format!("Kept {}: {}", entry.name, issues.join("; ")));
+                    skipped.push(entry.name.clone());
+                }
+            }
+
+            if !skipped.is_empty() {
+                return Err(GwError::Other(format!(
+                    "Kept {} unclean worktree(s) acquired: {}. Run `gw cleanup` inside each \
+                     (or fix it), then `gw worktree pool release <name>`.",
+                    skipped.len(),
+                    skipped.join(", ")
+                )));
             }
         }
     }
