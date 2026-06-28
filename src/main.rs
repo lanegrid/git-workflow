@@ -6,6 +6,7 @@ use clap::Parser;
 
 use git_workflow::cli::{Cli, Commands, PoolCommands, WorktreeCommands};
 use git_workflow::commands;
+use git_workflow::error::GwError;
 use git_workflow::output;
 
 fn main() -> ExitCode {
@@ -54,6 +55,12 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             output::error(&e.to_string());
+            if matches!(e, GwError::BranchCheckedOutElsewhere { .. }) {
+                output::hints(&[
+                    "git worktree list   # See which worktree holds the branch",
+                    "gw status           # Check current state",
+                ]);
+            }
             ExitCode::FAILURE
         }
     }

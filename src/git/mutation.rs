@@ -50,12 +50,40 @@ pub fn fetch_prune(verbose: bool) -> Result<()> {
 
 /// Checkout an existing branch
 pub fn checkout(branch: &str, verbose: bool) -> Result<()> {
-    git_run(&["checkout", branch, "--quiet"], verbose)
+    git_run(&["checkout", branch, "--quiet"], verbose).map_err(|e| map_checkout_error(branch, e))
 }
 
 /// Create and checkout a new branch from a starting point
 pub fn checkout_new_branch(branch: &str, start_point: &str, verbose: bool) -> Result<()> {
     git_run(&["checkout", "-b", branch, start_point, "--quiet"], verbose)
+        .map_err(|e| map_checkout_error(branch, e))
+}
+
+/// Turn git's raw "already checked out / used by worktree" failure into a
+/// typed, actionable error. In a worktree setup the same branch can't be
+/// checked out in two places, and git's bare fatal message doesn't tell the
+/// user what to do; `BranchCheckedOutElsewhere` carries the conflicting path
+/// and lets the CLI suggest next steps.
+fn map_checkout_error(branch: &str, err: GwError) -> GwError {
+    let GwError::GitCommandFailed(ref msg) = err else {
+        return err;
+    };
+    if msg.contains("already checked out") || msg.contains("already used by worktree") {
+        return GwError::BranchCheckedOutElsewhere {
+            branch: branch.to_string(),
+            path: extract_worktree_path(msg),
+        };
+    }
+    err
+}
+
+/// Pull the worktree path out of git's message, e.g.
+/// `fatal: 'main' is already checked out at '/path/to/wt'`.
+fn extract_worktree_path(msg: &str) -> Option<String> {
+    let start = msg.find("at '")? + "at '".len();
+    let rest = &msg[start..];
+    let end = rest.find('\'')?;
+    Some(rest[..end].to_string())
 }
 
 /// Pull from a remote branch (fast-forward only, safe)
