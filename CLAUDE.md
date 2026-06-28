@@ -26,8 +26,16 @@ This project uses [mise](https://mise.jdx.dev/) for task running (see `mise.toml
 | `mise run lint` / `lint:fix` | Run / fix clippy lints |
 | `mise run test` | Run tests |
 | `mise run build` | Build debug binary |
+| `mise run install` | Build and install `gw` locally (dogfooding) |
 
 `mise run verify` must pass (formatting, clippy, tests, build) before any commit.
+
+### Dogfooding
+
+We use our own `gw` CLI for this repo's git workflow, so keep the installed
+binary current. **After a PR that changes `gw` is merged, run `mise run install`
+from the main worktree** to rebuild and reinstall, picking up the latest `gw`.
+This is decoupled from `gw cleanup` — cleanup no longer reinstalls.
 
 ## Project Structure
 
