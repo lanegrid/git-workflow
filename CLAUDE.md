@@ -1,84 +1,55 @@
 # git-workflow
 
-A type-safe Git workflow CLI with worktree support and GitHub integration.
+A type-safe Git workflow CLI (`gw`) with worktree support and GitHub integration.
 
-## Important: Always Create PRs
+## Git workflow: read the skill first
 
-When making changes to this repository:
+**At the start of every session, load the `/git-workflow` skill before doing any
+git work.** It is the single source of truth for how this repo uses `gw`
+(feature branches, PRs, `gw await`, worktree pools, cleanup). Do not duplicate
+that workflow here — follow the skill.
 
-1. **Create a feature branch** before making changes: `/git-workflow new <branch-name>`
-2. **Run verification** before committing: `mise run verify`
-3. **Create a PR** for any changes: `/git-workflow pr "<description>"`
-4. **Never push directly to main** - always go through PR workflow
+Hard rules (details in the skill):
+
+- Always work on a feature branch; **never push directly to `main`**.
+- Run `mise run verify` before committing.
+- Every change goes through a PR.
 
 ## Development
 
-This project uses [mise](https://mise.jdx.dev/) for task running. Tasks are defined in `mise.toml`.
-
-### Available Tasks
+This project uses [mise](https://mise.jdx.dev/) for task running (see `mise.toml`).
 
 | Command | Description |
 |---------|-------------|
-| `mise run verify` | Run all checks (fmt, lint, test, build) |
-| `mise run fmt` | Check code formatting |
-| `mise run fmt:fix` | Fix code formatting |
-| `mise run lint` | Run clippy lints |
-| `mise run lint:fix` | Fix clippy lints |
+| `mise run verify` | Run all checks (fmt, lint, test, build) — run before committing |
+| `mise run fmt` / `fmt:fix` | Check / fix formatting |
+| `mise run lint` / `lint:fix` | Run / fix clippy lints |
 | `mise run test` | Run tests |
 | `mise run build` | Build debug binary |
-| `mise run build:release` | Build release binary |
-| `mise run install` | Build and install gw locally (for dogfooding) |
-| `mise run cleanup` | Cleanup merged branch + reinstall (main worktree only) |
 
-### Development Workflow
+`mise run verify` must pass (formatting, clippy, tests, build) before any commit.
 
-This project uses `gw` (itself) for git workflow. Use the `/git-workflow` skill:
+## Project Structure
 
-```bash
-/git-workflow new feature/my-feature   # Start new feature branch
-/git-workflow pr "Add feature X"       # Create PR
-/git-workflow cleanup                  # Clean up after merge
-/git-workflow status                   # Check current state
-```
-
-Or use `gw` commands directly:
-
-```bash
-gw new feature/my-feature    # Create branch from origin/main
-gw status                    # Show state and next action
-gw pause "WIP message"       # Save work and go home
-gw cleanup                   # Delete merged branch
-gw home                      # Return to home branch
-gw sync                      # Rebase after base PR merged
-gw open                      # Open current branch's PR in browser
-gw await                     # Watch PR to merge, then cleanup
-gw undo                      # Undo last commit
-```
-
-### Before Committing
-
-Always run `mise run verify` before committing to ensure:
-- Code is formatted correctly
-- No clippy warnings
-- All tests pass
-- Project builds successfully
-
-### Project Structure
+Rust binary crate. The layout is roughly:
 
 ```
 src/
-├── main.rs          # Entry point
-├── lib.rs           # Library root
-├── cli.rs           # CLI argument parsing
-├── error.rs         # Error types
-├── commands/        # Command implementations
-├── git/             # Git operations abstraction
-├── github/          # GitHub CLI integration
-├── state/           # Repository state detection
-└── output/          # Terminal output formatting
+├── main.rs / lib.rs   # Entry point and library root
+├── cli.rs             # CLI argument parsing (clap)
+├── error.rs           # Error types
+├── commands/          # One module per gw subcommand
+├── git/               # Git operations (query / mutation)
+├── github/            # gh CLI integration (serde-parsed JSON)
+├── state/             # Repository / working-dir / next-action detection
+├── pool/              # Worktree pool management
+└── output/            # Terminal output formatting
 ```
 
-### Release Process
+Tests live in `tests/` (integration) and inline `#[cfg(test)]` modules. The
+codebase changes often — treat this as a map, not a spec.
+
+## Release Process
 
 Use the `/release` skill to create a new release:
 
