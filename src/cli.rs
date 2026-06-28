@@ -71,6 +71,11 @@ pub enum Commands {
         #[arg(long = "no-cleanup")]
         no_cleanup: bool,
 
+        /// Continue watching for merge even if CI checks fail
+        /// (default: stop and report the failure)
+        #[arg(long = "ignore-ci-failure")]
+        ignore_ci_failure: bool,
+
         /// Seconds between merge-status polls
         #[arg(long, default_value_t = 30)]
         interval: u64,
@@ -139,12 +144,14 @@ mod tests {
                 open,
                 no_wait,
                 no_cleanup,
+                ignore_ci_failure,
                 interval,
             } => {
                 assert_eq!(pr, 42);
                 assert!(!open);
                 assert!(!no_wait);
                 assert!(!no_cleanup);
+                assert!(!ignore_ci_failure);
                 assert_eq!(interval, 30);
             }
             _ => panic!("expected Await command"),
@@ -160,6 +167,7 @@ mod tests {
             "--open",
             "--no-wait",
             "--no-cleanup",
+            "--ignore-ci-failure",
             "--interval",
             "5",
         ])
@@ -170,12 +178,14 @@ mod tests {
                 open,
                 no_wait,
                 no_cleanup,
+                ignore_ci_failure,
                 interval,
             } => {
                 assert_eq!(pr, 42);
                 assert!(open);
                 assert!(no_wait);
                 assert!(no_cleanup);
+                assert!(ignore_ci_failure);
                 assert_eq!(interval, 5);
             }
             _ => panic!("expected Await command"),
