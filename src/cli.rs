@@ -50,6 +50,9 @@ pub enum Commands {
     /// Sync current branch after base PR is merged (update base to main, rebase, force push)
     Sync,
 
+    /// Open the PR for the current branch in the browser
+    Open,
+
     /// Manage worktrees
     Worktree {
         #[command(subcommand)]

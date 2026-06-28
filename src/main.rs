@@ -20,6 +20,7 @@ fn main() -> ExitCode {
         Commands::Abandon => commands::abandon::run(cli.verbose),
         Commands::Undo => commands::undo::run(cli.verbose),
         Commands::Sync => commands::sync::run(cli.verbose),
+        Commands::Open => commands::open::run(cli.verbose),
         Commands::Worktree { command } => match command {
             WorktreeCommands::Pool { command } => match command {
                 PoolCommands::Warm { count } => commands::worktree_pool::warm(count, cli.verbose),

@@ -50,6 +50,7 @@ gw pause "WIP message"       # Save work and go home
 gw cleanup                   # Delete merged branch
 gw home                      # Return to home branch
 gw sync                      # Rebase after base PR merged
+gw open                      # Open current branch's PR in browser
 gw undo                      # Undo last commit
 ```
 
