@@ -246,12 +246,20 @@ fn check_unpushed_commits(branch: &str) -> Result<()> {
             return Err(GwError::UnpushedCommits(branch.to_string(), count));
         }
     } else {
-        // No remote tracking
-        if git::remote_branch_exists(branch) {
-            output::info("Branch has no tracking but remote exists (PR probably merged)");
-        } else {
-            output::warn(&format!("Branch '{}' was never pushed to remote", branch));
-            output::warn("Commits on this branch will be lost if deleted");
+        // No remote tracking. Be conservative: only claim the work is safe
+        // (remote copy exists) when we can positively confirm it.
+        match git::remote_branch_exists(branch) {
+            Ok(true) => {
+                output::info("Branch has no tracking but remote exists (PR probably merged)")
+            }
+            Ok(false) => {
+                output::warn(&format!("Branch '{}' was never pushed to remote", branch));
+                output::warn("Commits on this branch will be lost if deleted");
+            }
+            Err(e) => {
+                output::warn(&format!("Could not verify remote for '{}': {}", branch, e));
+                output::warn("Commits on this branch may be lost if deleted");
+            }
         }
     }
     Ok(())
@@ -295,7 +303,19 @@ fn delete_local_branch(
 
 /// Handle remote branch deletion
 fn handle_remote_branch(branch: &str, pr_info: &Option<github::PrInfo>, verbose: bool) {
-    let remote_exists = git::remote_branch_exists(branch);
+    let remote_exists = match git::remote_branch_exists(branch) {
+        Ok(v) => v,
+        Err(e) => {
+            // Couldn't reach the remote — don't claim it was "already deleted".
+            output::warn(&format!(
+                "Could not verify remote branch origin/{branch}: {e}"
+            ));
+            output::action(&format!(
+                "git push origin --delete {branch}  # if it still exists"
+            ));
+            return;
+        }
+    };
 
     if !remote_exists {
         // Remote branch already deleted (GitHub auto-delete after merge)

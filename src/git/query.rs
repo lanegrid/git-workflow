@@ -71,9 +71,29 @@ pub fn branch_exists(branch: &str) -> bool {
     ])
 }
 
-/// Check if a branch exists on remote origin
-pub fn remote_branch_exists(branch: &str) -> bool {
-    git_check(&["ls-remote", "--exit-code", "--heads", "origin", branch])
+/// Check if a branch exists on remote origin.
+///
+/// Returns `Ok(true)` / `Ok(false)` only when the answer is definitive:
+/// `git ls-remote --exit-code` exits 0 when the ref exists and 2 when it
+/// provably does not. Any other exit (no `origin`, network/auth failure) is
+/// returned as an `Err` so callers can distinguish "not there" from "couldn't
+/// check" — the latter must never be treated as safe-to-delete.
+pub fn remote_branch_exists(branch: &str) -> Result<bool> {
+    let output = Command::new("git")
+        .args(["ls-remote", "--exit-code", "--heads", "origin", branch])
+        .output()
+        .map_err(|e| GwError::GitCommandFailed(format!("Failed to execute git: {e}")))?;
+
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(2) => Ok(false),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            Err(GwError::GitCommandFailed(format!(
+                "Could not query remote branch '{branch}': {stderr}"
+            )))
+        }
+    }
 }
 
 /// Get the current HEAD commit hash
@@ -182,9 +202,11 @@ pub fn current_dir_name() -> Result<String> {
 
 /// Get the default remote branch (origin/main or origin/master)
 pub fn get_default_remote_branch() -> Result<String> {
-    if remote_branch_exists("main") {
+    // An unreachable remote is treated as "not found" here; default_branch_name()
+    // falls back to local branches when this returns an error.
+    if remote_branch_exists("main").unwrap_or(false) {
         Ok("origin/main".to_string())
-    } else if remote_branch_exists("master") {
+    } else if remote_branch_exists("master").unwrap_or(false) {
         Ok("origin/master".to_string())
     } else {
         Err(GwError::Other(
