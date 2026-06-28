@@ -18,7 +18,8 @@ pub fn run() -> Result<()> {
     let current = git::current_branch()?;
     let working_dir = WorkingDirState::detect();
     let sync_state = SyncState::detect(&current).unwrap_or(SyncState::NoUpstream);
-    let has_remote = git::remote_branch_exists(&current);
+    // For status display, an unverifiable remote is reported as "not pushed".
+    let has_remote = git::remote_branch_exists(&current).unwrap_or(false);
 
     println!();
 
