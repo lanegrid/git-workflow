@@ -24,7 +24,7 @@ pub fn run() -> Result<()> {
 
     // Repository type
     match &repo_type {
-        RepoType::MainRepo => {
+        RepoType::MainRepo { .. } => {
             output::info("Repository: main repo");
         }
         RepoType::Worktree { home_branch } => {
@@ -78,9 +78,12 @@ pub fn run() -> Result<()> {
         }
     }
 
-    // PR info (only for non-home branches)
+    // PR info (only for non-home branches). The default branch (main/master) is
+    // the trunk a stacked PR ultimately targets — distinct from this worktree's
+    // home branch.
+    let default_branch = git::default_branch_name()?;
     let (pr_info, base_pr_merged) = if current != home_branch {
-        get_and_show_pr_info(&current)
+        get_and_show_pr_info(&current, &default_branch)
     } else {
         (None, None)
     };
@@ -119,9 +122,9 @@ pub fn run() -> Result<()> {
 ///
 /// Returns:
 /// - (Some(PrInfo), Some(base_branch)) if PR exists and base PR was merged
-/// - (Some(PrInfo), None) if PR exists but base is main or base PR not merged
+/// - (Some(PrInfo), None) if PR exists but base is the default branch or base PR not merged
 /// - (None, None) if no PR found
-fn get_and_show_pr_info(branch: &str) -> (Option<PrInfo>, Option<String>) {
+fn get_and_show_pr_info(branch: &str, default_branch: &str) -> (Option<PrInfo>, Option<String>) {
     if !github::is_gh_available() {
         return (None, None);
     }
@@ -154,13 +157,17 @@ fn get_and_show_pr_info(branch: &str) -> (Option<PrInfo>, Option<String>) {
                 }
             }
 
-            // Show base branch info
-            if pr.base_branch != "main" {
-                output::info(&format!("Base: {} (not main)", pr.base_branch));
+            // Show base branch info (a base other than the default branch means
+            // this is a stacked PR).
+            if pr.base_branch != default_branch {
+                output::info(&format!(
+                    "Base: {} (not {})",
+                    pr.base_branch, default_branch
+                ));
             }
 
-            // Check if base PR is merged (only if base != main and PR is open)
-            let base_pr_merged = if pr.base_branch != "main" && pr.state.is_open() {
+            // Check if base PR is merged (only for a stacked, still-open PR)
+            let base_pr_merged = if pr.base_branch != default_branch && pr.state.is_open() {
                 check_base_pr_merged(&pr.base_branch)
             } else {
                 None
