@@ -2,18 +2,12 @@
 
 A type-safe Git workflow CLI (`gw`) with worktree support and GitHub integration.
 
-## Git workflow: read the skill first
+## Rules
 
-**At the start of every session, load the `/git-workflow` skill before doing any
-git work.** It is the single source of truth for how this repo uses `gw`
-(feature branches, PRs, `gw await`, worktree pools, cleanup). Do not duplicate
-that workflow here — follow the skill.
+- **Load the `git-workflow` skill before your first tool call.** Always — even for read-only or docs work.
+- **Any file change ships as a PR.** Feature branch → `mise run verify` → PR. Never push to `main`.
 
-Hard rules (details in the skill):
-
-- Always work on a feature branch; **never push directly to `main`**.
-- Run `mise run verify` before committing.
-- Every change goes through a PR.
+The skill is the single source of truth for the `gw` workflow; don't duplicate it here.
 
 ## Development
 

@@ -7,184 +7,144 @@ allowed-tools: Bash(gw*), Bash(git-workflow*), Bash(gh*), Bash(git*), Read, Edit
 # Git Workflow and Conventions
 
 Worktree-aware Git workflow for this repo. We dogfood our own `gw` CLI, so use
-`gw`, `git`, and `gh` directly. `gw` is worktree-aware and always tells you the
-next action via `gw status`.
+`gw`, `git`, and `gh` directly.
 
-## Quick Reference
+**How to use this skill.** The workflow is *state-driven*: you rarely need to
+recall steps. Run `gw status` and it prints the single next action for wherever
+you are. The sections below are organized by **situation** — *when* you're in it,
+*what* to run, and *why*. When in doubt, `gw status`.
 
-```sh
-# Basic operations
-gw status              # Show current state + next action
-gw home                # Switch to home branch + sync with origin/main
-gw new <branch>        # Create new branch from origin/main
-gw cleanup [branch]    # Delete merged branch + return to home
+## The engine: `gw status` → "Next:"
 
-# Pause / discard / undo
-gw pause [message]     # WIP commit + return to home
-gw abandon             # Discard all changes + return to home
-gw undo                # Soft reset HEAD~1 (undo last commit)
+`gw status` inspects working dir, upstream sync, home-branch, and PR state, then
+prints one `Next:` line. Follow it. This is the situation → action → reason map:
 
-# Stacked PRs
-gw sync                # Sync current branch after base PR merged (rebase + force push)
+| When `gw status` says…            | What to run                                  | Why |
+|-----------------------------------|----------------------------------------------|-----|
+| `Next: start new work`            | `gw new feature/...`                          | Branch off fresh `origin/main`; never work on `main`. |
+| `Next: commit changes`            | stage deliberately, then `git commit` (below) | Record the change once it's coherent. |
+| `Next: push to remote`            | `git push -u origin <branch>`                 | Publish the branch so a PR can open. |
+| `Next: create pull request`       | `gh pr create -a "@me" -t "..."`              | Every change ships through a PR. |
+| `Waiting: PR #N in review`        | `gw await <N> --open` (background)            | Hand CI → merge → cleanup to the watcher. |
+| `Next: cleanup merged branch`     | `gw cleanup`                                  | Delete the merged branch, return home. |
+| `Next: rebase on latest main`     | `git fetch --prune && git rebase origin/main` | Catch up to `main` before continuing. |
+| `Next: sync (base 'X' was merged)`| `gw sync`                                     | Restack this PR after its base merged. |
 
-# PR lifecycle
-gh pr create -a "@me"  # Create the PR
-gw open                # Open current branch's PR in the browser
-gw await <pr#> --open  # Open, then watch CI → merge → cleanup (run in background)
+## Situation: shipping a change (the normal path)
 
-# Worktree pool (parallel agent execution)
-gw worktree pool warm <count>   # Pre-create N worktrees
-gw worktree pool status         # Show available/total
-gw worktree pool acquire        # Acquire one (prints path to stdout)
-gw worktree pool release <name> # Release back to the pool
-gw worktree pool drain          # Remove all pool worktrees
-```
+**Every code change becomes a PR.** The path, by state:
 
-> **⚠️ Pitfalls**
-> - **Do not run `git checkout main`** — use `gw home` instead (worktree conflict).
-> - **Do not use `git stash`** — use `gw pause` instead (WIP commit, safer worktree switching).
-> - **Do not manually rebase stacked PRs** — use `gw sync` instead (updates the GitHub PR base + rebases + force pushes).
+| When | What | Why |
+|------|------|-----|
+| Starting | `gw new feature/your-feature` | New branch from `origin/main`. If you already edited on home, `gw new` keeps the changes and moves them onto the branch. |
+| Code is ready to record | stage intentionally → `git commit -m "feat: ..."` | See **Staging** below — review before committing. |
+| Committed | `git push -u origin feature/your-feature` | Publish for the PR. |
+| Pushed | `gh pr create -a "@me" -t "feat: ..."` | Open the PR; the URL gives you the PR number. |
+| PR exists | `gw await <pr#> --open` **in background, same turn** | CI wait → open → merge watch → cleanup, hands-off. |
+| Merged | *(automatic)* | `gw await` runs `gw cleanup` on merge. |
 
-> **🚨 Mandatory rule: after creating a PR, immediately launch `gw await <pr#> --open` as a background task.**
-> The moment `gh pr create` returns a URL (and thus the PR number), in that same
-> turn start `gw await <pr#> --open` with `Bash(run_in_background=true)`. Do
-> **not** ask the user "what next?", wait for CI, or stop — `gw await` runs CI
-> wait → browser open → merge watch → cleanup on its own. Skipping it means the
-> post-merge cleanup never runs and the branch is left behind. This is not optional.
+> **🚨 The moment `gh pr create` returns a URL, launch `gw await <pr#> --open` as
+> a background task in that same turn.** Do not ask "what next?", wait for CI, or
+> stop. `gw await` runs CI wait → browser open → merge watch → cleanup on its
+> own; skipping it means cleanup never runs and the branch is left behind. Not
+> optional.
 
-## Standard Workflow: Code → PR
+### Staging: commit deliberately, not `-A`
 
-**Every code change becomes a PR.** Follow this flow:
-
-```
-1. Branch   → gw new feature/your-feature
-2. Code     → make changes
-3. Commit   → git add -A && git commit -m "feat: ..."
-4. Push     → git push -u origin feature/your-feature
-5. PR       → gh pr create -a "@me" -t "feat: ..."
-6. Await    → gw await <pr#> --open  (REQUIRED — background task)
-7. Cleanup  → (auto: gw await runs gw cleanup on merge)
-```
-
-**Never skip step 6.** As soon as the `gh pr create` URL appears, launch
-`gw await <pr#> --open` in the background in the same assistant turn — the user
-expects CI / merge / cleanup to be handled end to end the moment the PR exists.
-
-### If you have uncommitted changes on the home branch
-
-This happens when you made changes before creating a branch. Fix it:
+Before committing, see what you're about to record and stage only what belongs:
 
 ```sh
-gw new feature/your-feature   # creates the branch, keeps your changes
-gw status                     # follow the suggested "Next:" action
+git status                 # what changed
+git diff                   # review the actual edits
+git add <paths>            # stage intentionally
+git commit -m "feat: ..."
 ```
 
-### gw await — PR lifecycle in one command (background task)
+**Why not `git add -A` / `git commit -a`:** a blanket add sweeps in scratch
+files, unrelated edits, and stray config — things you didn't mean to ship.
+Stage the specific paths for *this* change instead.
 
-Takes the **PR number** so the watcher stays bound to that one PR even if you
-switch branches (e.g. while working a stacked PR), and cleans up the PR's own
-head branch on merge — not whatever happens to be checked out. Best launched as
-a background task right after the PR is created. Use `--open` to open the PR in
-the browser first, then watch:
+## Situation: work gets interrupted or goes wrong
+
+| When | What | Why |
+|------|------|-----|
+| Need to drop this and do something else | `gw pause [message]` | WIP commit + return home — safe worktree switch (don't `git stash`). |
+| Changes are a dead end | `gw abandon` | Discard everything, return home. |
+| Last commit was a mistake | `gw undo` | Soft reset `HEAD~1`; keeps the changes unstaged. |
+| `main` moved under you | `git fetch --prune && git rebase origin/main` | Replay your work on the latest `main`. |
+| Stacked PR's base just merged | `gw sync` | Updates the GitHub base, rebases, force-pushes — don't rebase stacked PRs by hand. |
+
+## Situation: a PR is in flight — `gw await`
+
+Launch as a background task right after the PR is created. It takes the **PR
+number** (not a branch) so the watcher stays bound to that PR even if you switch
+branches, and cleans up *that PR's* head branch on merge.
 
 ```
 [Bash(run_in_background=true)] gw await <pr#> --open
 ```
 
-Three phases run automatically:
+It runs, in order:
 
+0. **Browser open** *(only with `--open`)* — opens the PR page up front, before waiting.
 1. **CI wait** — `gh pr checks --watch` (skip with `--no-wait`).
-2. **Browser open** — opens the PR page (only with `--open`).
-3. **Merge watch** — polls PR state every `--interval`s (default 30):
+2. **Merge watch** — polls every `--interval`s (default 30):
    - `MERGED` → `$GW_NOTIFY_CMD` notification → `gw cleanup <head branch>` → exit
-   - `CLOSED` → message → exit
+   - `CLOSED` → `$GW_NOTIFY_CMD` notification → exit
 
-If CI fails, `gw await` stops and reports it (the PR can't merge until it's
-fixed) instead of watching forever. Fix → push → relaunch, or pass
-`--ignore-ci-failure` to keep watching regardless.
+If CI fails, `gw await` stops and reports it instead of watching forever. Fix →
+push → relaunch, or pass `--ignore-ci-failure` to keep watching regardless.
 
 Flags: `--open`, `--no-wait`, `--no-cleanup` (stop after merge),
 `--ignore-ci-failure`, `--interval <secs>`.
 
-**Singleton rule — only ONE watcher per PR:**
-
-- Launch `gw await <pr#>` **once**, after the final push, when no more changes are expected.
-- If CI fails and you must push a fix: **stop the existing watcher** with `TaskStop`
-  first, then fix, push, and relaunch.
-- Never run multiple `gw await <pr#>` watchers for the same PR.
+**One watcher per PR.** Launch `gw await <pr#>` once, after the final push. If CI
+fails and you must push a fix, **stop the existing watcher with `TaskStop`
+first**, then fix, push, relaunch. Never run two watchers for the same PR.
 
 **When background output arrives** via `<system-reminder>`, you MUST:
-
 1. Read the watcher's output file.
-2. Report the result to the user immediately (merged/closed, cleanup success/failure).
+2. Report the result to the user immediately (merged/closed, cleanup ok/failed).
 
-## Proactive Workflow
+## Situation: running multiple agents in parallel — worktree pool
 
-**Always run `gw status` and follow the "Next:" action.** It detects working
-directory state, upstream sync state, home-branch state, and PR state, then
-suggests what to do:
-
-| Status Output | Action |
-|--------------|--------|
-| `Next: start new work` | `gw new feature/...` |
-| `Next: commit changes` | `git add -A && git commit -m "..."` |
-| `Next: push to remote` | `git push -u origin <branch>` |
-| `Next: create pull request` | `gh pr create -a "@me" -t "..."` |
-| `Waiting: PR #N in review` | `gw await <N> --open` (watch to merge) or `gw open` |
-| `Next: cleanup merged branch` | `gw cleanup` |
-| `Next: rebase on latest main` | `git fetch --prune && git rebase origin/main` |
-| `Next: sync (base 'X' was merged)` | `gw sync` |
-
-## Worktree Model
-
-This project supports git worktrees. Each worktree has a **home branch**.
-
-- The main worktree's home is `main`.
-- Never checkout `main` directly from another worktree — use `gw home`.
-- `gw` handles worktree boundaries automatically.
-
-### Pool Worktrees (for parallel agent execution)
-
-Use the pre-warmed pool when running multiple agents in parallel.
+Use the pre-warmed pool so parallel agents each get an isolated worktree.
 
 ```sh
-# 1. Pre-create once
-gw worktree pool warm 3
-
-# 2. Check availability (confirm available > 0)
-gw worktree pool status
-
-# 3. Acquire (path is printed to stdout)
-WORKTREE_PATH=$(gw worktree pool acquire)
-
-# 4. Run the agent inside that worktree
-
-# 5. Always release when done (success or failure)
-gw worktree pool release <name>
+gw worktree pool warm 3                  # 1. pre-create once
+gw worktree pool status                  # 2. confirm available > 0
+WORKTREE_PATH=$(gw worktree pool acquire)  # 3. acquire (path → stdout)
+#                                          # 4. run the agent inside it
+gw worktree pool release <name>          # 5. release when done
+gw worktree pool drain                   # remove all pool worktrees
 ```
 
-> **Important:** forgetting to release drains the pool. Always release, even on error.
+> **Always release, even on error** — a forgotten release drains the pool.
 
-## Commit Conventions
+## Worktree model & hard "don'ts"
 
-Conventional Commits style:
+Each worktree has a **home branch**; the main worktree's home is `main`. `gw`
+handles worktree boundaries for you. Because of them:
+
+- **Don't `git checkout main`** — use `gw home` (switches to home + syncs with
+  `origin/main`). A direct checkout conflicts across worktrees.
+- **Don't `git stash`** — use `gw pause` (a WIP commit travels across worktrees
+  safely; a stash doesn't).
+- **Don't hand-rebase stacked PRs** — use `gw sync`.
+- **Don't push to `main`** — every change goes through a PR.
+
+## Commit conventions
+
+Conventional Commits:
 
 ```
-feat:     new feature
-fix:      bug fix
-chore:    build / tooling / housekeeping
-docs:     documentation
-refactor: refactor (no behavior change)
-test:     tests
+feat:     new feature          docs:     documentation
+fix:      bug fix              refactor: refactor (no behavior change)
+chore:    build / tooling      test:     tests
 ```
 
-Examples:
-
-```
-feat: add gw await command
-fix: handle detached HEAD in status
-chore: bump version to 0.6.0
-```
+Examples: `feat: add gw await command` · `fix: handle detached HEAD in status` ·
+`chore: bump version to 0.6.0`
 
 ## Notes
 

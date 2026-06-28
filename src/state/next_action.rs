@@ -141,7 +141,9 @@ impl NextAction {
             NextAction::CommitChanges => {
                 output::action("Next: commit changes");
                 println!();
-                println!("  git add -A && git commit -m \"feat: ...\"");
+                println!(
+                    "  git add <files> && git commit -m \"feat: ...\"  # stage deliberately, not -A"
+                );
             }
             NextAction::PushChanges => {
                 output::action("Next: push to remote");
