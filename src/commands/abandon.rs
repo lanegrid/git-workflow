@@ -48,8 +48,10 @@ pub fn run(verbose: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Warn about what will be lost
-    if has_changes {
+    // Warn about what will be lost. Untracked files get their own message
+    // below, so only mention tracked changes here to avoid double-reporting the
+    // untracked-only case.
+    if working_dir.has_tracked_changes() {
         output::warn(&format!(
             "Uncommitted changes will be DISCARDED: {}",
             working_dir.description()
