@@ -26,7 +26,6 @@ prints one `Next:` line. Follow it. This is the situation → action → reason 
 | `Next: push to remote`            | `git push -u origin <branch>`                 | Publish the branch so a PR can open. |
 | `Next: create pull request`       | `gh pr create -a "@me" -t "..."`              | Every change ships through a PR. |
 | `Waiting: PR #N in review`        | `gw await <N> --open` (background)            | Hand CI → merge → cleanup to the watcher. |
-| `Next: cleanup merged branch`     | `gw cleanup`                                  | Delete the merged branch, return home. |
 | `Next: rebase on latest main`     | `git fetch --prune && git rebase origin/main` | Catch up to `main` before continuing. |
 | `Next: sync (base 'X' was merged)`| `gw sync`                                     | Restack this PR after its base merged. |
 
