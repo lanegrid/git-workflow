@@ -55,6 +55,7 @@ Use `git-workflow` commands for git operations:
 - `git-workflow cleanup` - Delete merged branch safely
 - `git-workflow sync` - Update after base PR merged
 - `git-workflow open` - Open the current branch's PR in the browser
+- `git-workflow await` - Watch the PR to completion (CI → merge), then clean up
 ```
 
 Or use the `/git-workflow` skill if configured.
@@ -87,6 +88,7 @@ git-workflow cleanup
 | `git-workflow home` | Return to home branch, sync with origin |
 | `git-workflow sync` | Sync current branch with origin/main |
 | `git-workflow open` | Open the current branch's PR in the browser |
+| `git-workflow await` | Watch the PR until merged/closed, then clean up |
 | `git-workflow cleanup [branch]` | Delete merged branch (checks PR status) |
 | `git-workflow pause [msg]` | WIP commit + return home |
 | `git-workflow abandon` | Discard changes + return home |
@@ -111,6 +113,33 @@ your dotfiles instead of the CLI. Example:
 # ~/.config/fish/config.fish (or your shell's rc)
 set -gx GW_OPEN_URL_CMD "$HOME/dotfiles/scripts/open-chrome-pr.sh"
 ```
+
+### Watching a PR to completion
+
+`gw await` is the closing bookend of the workflow. Run it from your feature
+branch and it watches the PR until it reaches a terminal state, then cleans up:
+
+1. **Wait for CI** — `gh pr checks --watch` (skip with `--no-wait`)
+2. **Watch for merge** — polls the PR state every `--interval` seconds (default 30)
+3. **On merge** — sends a notification, then runs `gw cleanup` (skip with `--no-cleanup`)
+
+```bash
+gw await                 # wait for CI + merge, then cleanup
+gw await --open          # also open the PR in the browser first
+gw await --no-cleanup    # stop after merge, leave cleanup for later
+gw await --no-wait       # skip CI wait, just watch for merge
+```
+
+It is designed to run unattended (e.g. as a background task). The merge
+notification is delegated to `$GW_NOTIFY_CMD` (called as `$GW_NOTIFY_CMD
+"<message>"`), keeping platform-specific notification logic in your dotfiles:
+
+```bash
+# A script that pops a macOS notification, for example:
+set -gx GW_NOTIFY_CMD "$HOME/dotfiles/scripts/notify.sh"
+```
+
+If `GW_NOTIFY_CMD` is unset, the notification step is simply skipped.
 
 ### Safety Features
 

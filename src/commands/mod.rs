@@ -1,6 +1,7 @@
 //! Command implementations
 
 pub mod abandon;
+pub mod await_pr;
 pub mod cleanup;
 mod helpers;
 pub mod home;

@@ -68,7 +68,9 @@ pub fn run(verbose: bool) -> Result<()> {
 }
 
 /// Open a URL in the browser using the resolved open command.
-fn open_url(url: &str, verbose: bool) -> Result<()> {
+///
+/// Shared with `gw await --open`.
+pub(crate) fn open_url(url: &str, verbose: bool) -> Result<()> {
     let gw_cmd = std::env::var("GW_OPEN_URL_CMD").ok();
     let open_cmd = std::env::var("OPEN_URL_CMD").ok();
     let program = resolve_open_program(

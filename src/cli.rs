@@ -53,6 +53,25 @@ pub enum Commands {
     /// Open the PR for the current branch in the browser
     Open,
 
+    /// Watch the current branch's PR until merged or closed, then clean up
+    Await {
+        /// Also open the PR in the browser before watching
+        #[arg(long)]
+        open: bool,
+
+        /// Skip waiting for CI checks
+        #[arg(long = "no-wait")]
+        no_wait: bool,
+
+        /// Do not clean up the branch after the PR is merged
+        #[arg(long = "no-cleanup")]
+        no_cleanup: bool,
+
+        /// Seconds between merge-status polls
+        #[arg(long, default_value_t = 30)]
+        interval: u64,
+    },
+
     /// Manage worktrees
     Worktree {
         #[command(subcommand)]
@@ -95,4 +114,56 @@ pub enum PoolCommands {
         #[arg(long)]
         force: bool,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn await_defaults() {
+        let cli = Cli::try_parse_from(["gw", "await"]).unwrap();
+        match cli.command {
+            Commands::Await {
+                open,
+                no_wait,
+                no_cleanup,
+                interval,
+            } => {
+                assert!(!open);
+                assert!(!no_wait);
+                assert!(!no_cleanup);
+                assert_eq!(interval, 30);
+            }
+            _ => panic!("expected Await command"),
+        }
+    }
+
+    #[test]
+    fn await_flags() {
+        let cli = Cli::try_parse_from([
+            "gw",
+            "await",
+            "--open",
+            "--no-wait",
+            "--no-cleanup",
+            "--interval",
+            "5",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Await {
+                open,
+                no_wait,
+                no_cleanup,
+                interval,
+            } => {
+                assert!(open);
+                assert!(no_wait);
+                assert!(no_cleanup);
+                assert_eq!(interval, 5);
+            }
+            _ => panic!("expected Await command"),
+        }
+    }
 }

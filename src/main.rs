@@ -21,6 +21,12 @@ fn main() -> ExitCode {
         Commands::Undo => commands::undo::run(cli.verbose),
         Commands::Sync => commands::sync::run(cli.verbose),
         Commands::Open => commands::open::run(cli.verbose),
+        Commands::Await {
+            open,
+            no_wait,
+            no_cleanup,
+            interval,
+        } => commands::await_pr::run(open, no_wait, no_cleanup, interval, cli.verbose),
         Commands::Worktree { command } => match command {
             WorktreeCommands::Pool { command } => match command {
                 PoolCommands::Warm { count } => commands::worktree_pool::warm(count, cli.verbose),

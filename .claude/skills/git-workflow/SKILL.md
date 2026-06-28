@@ -34,6 +34,13 @@ Parse `$ARGUMENTS` and execute the appropriate workflow:
 4. Create PR: `gh pr create --fill` or with provided title
 5. Open PR in browser: `gw open`
 
+### `await` - Watch the PR to completion, then clean up
+
+1. From the feature branch, run `gw await` (optionally in the background)
+2. Waits for CI (`gh pr checks --watch`), then watches the PR until merged/closed
+3. On merge: notifies (`$GW_NOTIFY_CMD`) and runs cleanup automatically
+4. Flags: `--open` (open browser first), `--no-wait` (skip CI), `--no-cleanup`, `--interval <secs>`
+
 ### `cleanup [branch]` - Clean up merged branch
 
 1. Run `mise run cleanup` to delete merged branch and reinstall gw
