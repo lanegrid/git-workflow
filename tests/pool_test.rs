@@ -618,3 +618,121 @@ fn test_acquire_drain_cycle() {
     let out4 = run_gw(local.path(), &["worktree", "pool", "acquire"]);
     assert_success(&out4, "re-acquire after drain+warm");
 }
+
+// --- inspection on release / acquire ---
+
+/// Path to a pool worktree directory under the leader's `.worktrees/`.
+fn pool_worktree_path(leader_root: &Path, prefix: &str, n: u32) -> std::path::PathBuf {
+    leader_root
+        .join(".worktrees")
+        .join(format!("{prefix}{n:03}"))
+}
+
+#[test]
+fn test_release_by_name_rejects_dirty_worktree() {
+    let origin = create_origin_repo();
+    let local = create_local_repo(origin.path());
+    let leader = leader_name_for(local.path());
+    let prefix = format!("{leader}-pool-");
+
+    run_gw(local.path(), &["worktree", "pool", "warm", "1"]);
+    let acq = run_gw(local.path(), &["worktree", "pool", "acquire"]);
+    assert_success(&acq, "acquire");
+
+    // An agent leaves uncommitted work behind and forgets to clean up.
+    let wt = pool_worktree_path(local.path(), &prefix, 1);
+    std::fs::write(wt.join("leftover.txt"), "wip").unwrap();
+
+    let name = format!("{prefix}001");
+    let output = run_gw(local.path(), &["worktree", "pool", "release", &name]);
+    assert!(
+        !output.status.success(),
+        "release should reject a dirty worktree"
+    );
+    let err = stderr_str(&output);
+    assert!(err.contains("not in a clean state"), "stderr: {err}");
+
+    // It must remain acquired (not silently returned to the pool).
+    let status = run_gw(local.path(), &["worktree", "pool", "status"]);
+    let out = stdout_str(&status);
+    assert!(out.contains("0 available"), "after rejected release: {out}");
+    assert!(out.contains("1 acquired"), "after rejected release: {out}");
+}
+
+#[test]
+fn test_release_all_keeps_dirty_releases_clean() {
+    let origin = create_origin_repo();
+    let local = create_local_repo(origin.path());
+    let leader = leader_name_for(local.path());
+    let prefix = format!("{leader}-pool-");
+
+    run_gw(local.path(), &["worktree", "pool", "warm", "2"]);
+    run_gw(local.path(), &["worktree", "pool", "acquire"]);
+    run_gw(local.path(), &["worktree", "pool", "acquire"]);
+
+    // Dirty only the second worktree.
+    let wt2 = pool_worktree_path(local.path(), &prefix, 2);
+    std::fs::write(wt2.join("leftover.txt"), "wip").unwrap();
+
+    let output = run_gw(local.path(), &["worktree", "pool", "release"]);
+    assert!(
+        !output.status.success(),
+        "release all should report the kept dirty worktree"
+    );
+
+    // Clean 001 returned, dirty 002 kept acquired.
+    let status = run_gw(local.path(), &["worktree", "pool", "status"]);
+    let out = stdout_str(&status);
+    assert!(out.contains("1 available"), "after partial release: {out}");
+    assert!(out.contains("1 acquired"), "after partial release: {out}");
+}
+
+#[test]
+fn test_acquire_skips_unclean_available_worktree() {
+    let origin = create_origin_repo();
+    let local = create_local_repo(origin.path());
+    let leader = leader_name_for(local.path());
+    let prefix = format!("{leader}-pool-");
+
+    run_gw(local.path(), &["worktree", "pool", "warm", "2"]);
+
+    // Dirty the first available worktree (e.g. a crashed agent left it behind).
+    let wt1 = pool_worktree_path(local.path(), &prefix, 1);
+    std::fs::write(wt1.join("leftover.txt"), "wip").unwrap();
+
+    let output = run_gw(local.path(), &["worktree", "pool", "acquire"]);
+    assert_success(&output, "acquire skipping dirty");
+
+    // It must hand out the clean 002, not the dirty 001.
+    let path = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .replace('\\', "/");
+    assert!(
+        path.ends_with(&format!(".worktrees/{prefix}002")),
+        "should skip dirty 001 and acquire 002, got: {path}"
+    );
+    let err = stderr_str(&output);
+    assert!(err.contains("Skipping unclean worktree"), "stderr: {err}");
+}
+
+#[test]
+fn test_acquire_fails_when_all_available_unclean() {
+    let origin = create_origin_repo();
+    let local = create_local_repo(origin.path());
+    let leader = leader_name_for(local.path());
+    let prefix = format!("{leader}-pool-");
+
+    run_gw(local.path(), &["worktree", "pool", "warm", "1"]);
+
+    // Dirty the only available worktree.
+    let wt1 = pool_worktree_path(local.path(), &prefix, 1);
+    std::fs::write(wt1.join("leftover.txt"), "wip").unwrap();
+
+    let output = run_gw(local.path(), &["worktree", "pool", "acquire"]);
+    assert!(
+        !output.status.success(),
+        "acquire should fail when no clean worktree is available"
+    );
+    let err = stderr_str(&output);
+    assert!(err.contains("No clean worktree available"), "stderr: {err}");
+}
