@@ -57,7 +57,7 @@ pub fn run(verbose: bool) -> Result<()> {
     helpers::pull_with_output(&default_remote, default_branch, verbose)?;
 
     output::ready("Ready", home_branch);
-    output::hints(&["mise run git:new feature/your-feature  # Create new branch"]);
+    output::hints(&["gw new feature/your-feature  # Create new branch"]);
 
     Ok(())
 }
