@@ -67,10 +67,12 @@ pub struct PrInfo {
     pub state: PrState,
     /// Base branch (e.g., "main")
     pub base_branch: String,
+    /// Head branch (the PR's own branch, e.g., "feature/x")
+    pub head_branch: String,
 }
 
 impl PrInfo {
-    /// Create a new PrInfo for testing
+    /// Create a new PrInfo for testing (head branch defaults to empty)
     pub fn new(number: u64, title: &str, url: &str, state: PrState, base_branch: &str) -> Self {
         Self {
             number,
@@ -78,6 +80,7 @@ impl PrInfo {
             url: url.to_string(),
             state,
             base_branch: base_branch.to_string(),
+            head_branch: String::new(),
         }
     }
 }
@@ -90,5 +93,6 @@ pub struct RawPrData {
     pub url: String,
     pub state: String,
     pub base_branch: String,
+    pub head_branch: String,
     pub merge_commit: Option<String>,
 }

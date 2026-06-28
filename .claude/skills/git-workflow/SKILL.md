@@ -30,7 +30,7 @@ gw sync                # Sync current branch after base PR merged (rebase + forc
 # PR lifecycle
 gh pr create -a "@me"  # Create the PR
 gw open                # Open current branch's PR in the browser
-gw await --open        # Open, then watch CI → merge → cleanup (run in background)
+gw await <pr#> --open  # Open, then watch CI → merge → cleanup (run in background)
 
 # Worktree pool (parallel agent execution)
 gw worktree pool warm <count>   # Pre-create N worktrees
@@ -45,12 +45,12 @@ gw worktree pool drain          # Remove all pool worktrees
 > - **Do not use `git stash`** — use `gw pause` instead (WIP commit, safer worktree switching).
 > - **Do not manually rebase stacked PRs** — use `gw sync` instead (updates the GitHub PR base + rebases + force pushes).
 
-> **🚨 Mandatory rule: after creating a PR, immediately launch `gw await --open` as a background task.**
-> The moment `gh pr create` returns a URL, in that same turn start
-> `gw await --open` with `Bash(run_in_background=true)`. Do **not** ask the user
-> "what next?", wait for CI, or stop — `gw await` runs CI wait → browser open →
-> merge watch → cleanup on its own. Skipping it means the post-merge cleanup
-> never runs and the branch is left behind. This is not optional.
+> **🚨 Mandatory rule: after creating a PR, immediately launch `gw await <pr#> --open` as a background task.**
+> The moment `gh pr create` returns a URL (and thus the PR number), in that same
+> turn start `gw await <pr#> --open` with `Bash(run_in_background=true)`. Do
+> **not** ask the user "what next?", wait for CI, or stop — `gw await` runs CI
+> wait → browser open → merge watch → cleanup on its own. Skipping it means the
+> post-merge cleanup never runs and the branch is left behind. This is not optional.
 
 ## Standard Workflow: Code → PR
 
@@ -62,13 +62,13 @@ gw worktree pool drain          # Remove all pool worktrees
 3. Commit   → git add -A && git commit -m "feat: ..."
 4. Push     → git push -u origin feature/your-feature
 5. PR       → gh pr create -a "@me" -t "feat: ..."
-6. Await    → gw await --open        (REQUIRED — background task)
+6. Await    → gw await <pr#> --open  (REQUIRED — background task)
 7. Cleanup  → (auto: gw await runs gw cleanup on merge)
 ```
 
 **Never skip step 6.** As soon as the `gh pr create` URL appears, launch
-`gw await --open` in the background in the same assistant turn — the user expects
-CI / merge / cleanup to be handled end to end the moment the PR exists.
+`gw await <pr#> --open` in the background in the same assistant turn — the user
+expects CI / merge / cleanup to be handled end to end the moment the PR exists.
 
 ### If you have uncommitted changes on the home branch
 
@@ -81,11 +81,14 @@ gw status                     # follow the suggested "Next:" action
 
 ### gw await — PR lifecycle in one command (background task)
 
-Run from the feature branch, best launched as a background task right after the
-PR is created. Use `--open` to open the PR in the browser first, then watch:
+Takes the **PR number** so the watcher stays bound to that one PR even if you
+switch branches (e.g. while working a stacked PR), and cleans up the PR's own
+head branch on merge — not whatever happens to be checked out. Best launched as
+a background task right after the PR is created. Use `--open` to open the PR in
+the browser first, then watch:
 
 ```
-[Bash(run_in_background=true)] gw await --open
+[Bash(run_in_background=true)] gw await <pr#> --open
 ```
 
 Three phases run automatically:
@@ -93,17 +96,17 @@ Three phases run automatically:
 1. **CI wait** — `gh pr checks --watch` (skip with `--no-wait`).
 2. **Browser open** — opens the PR page (only with `--open`).
 3. **Merge watch** — polls PR state every `--interval`s (default 30):
-   - `MERGED` → `$GW_NOTIFY_CMD` notification → `gw cleanup` → exit
+   - `MERGED` → `$GW_NOTIFY_CMD` notification → `gw cleanup <head branch>` → exit
    - `CLOSED` → message → exit
 
 Flags: `--open`, `--no-wait`, `--no-cleanup` (stop after merge), `--interval <secs>`.
 
 **Singleton rule — only ONE watcher per PR:**
 
-- Launch `gw await` **once**, after the final push, when no more changes are expected.
+- Launch `gw await <pr#>` **once**, after the final push, when no more changes are expected.
 - If CI fails and you must push a fix: **stop the existing watcher** with `TaskStop`
   first, then fix, push, and relaunch.
-- Never run multiple `gw await` watchers for the same PR.
+- Never run multiple `gw await <pr#>` watchers for the same PR.
 
 **When background output arrives** via `<system-reminder>`, you MUST:
 
@@ -122,7 +125,7 @@ suggests what to do:
 | `Next: commit changes` | `git add -A && git commit -m "..."` |
 | `Next: push to remote` | `git push -u origin <branch>` |
 | `Next: create pull request` | `gh pr create -a "@me" -t "..."` |
-| `Waiting: PR #N in review` | `gw await --open` (watch to merge) or `gw open` |
+| `Waiting: PR #N in review` | `gw await <N> --open` (watch to merge) or `gw open` |
 | `Next: cleanup merged branch` | `gw cleanup` |
 | `Next: rebase on latest main` | `git fetch --prune && git rebase origin/main` |
 | `Next: sync (base 'X' was merged)` | `gw sync` |

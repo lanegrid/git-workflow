@@ -16,6 +16,7 @@ use super::types::RawPrData;
 ///   "url": "...",
 ///   "state": "MERGED",
 ///   "baseRefName": "main",
+///   "headRefName": "feature/x",
 ///   "mergeCommit": {"oid": "..."},
 ///   "mergedAt": "..."
 /// }
@@ -29,6 +30,7 @@ pub fn parse_pr_json(json: &str) -> Result<RawPrData> {
     let state = extract_json_string(json, "state").unwrap_or_default();
     let base_branch =
         extract_json_string(json, "baseRefName").unwrap_or_else(|| "main".to_string());
+    let head_branch = extract_json_string(json, "headRefName").unwrap_or_default();
     let merge_commit = extract_json_nested_string(json, "mergeCommit", "oid");
 
     Ok(RawPrData {
@@ -37,6 +39,7 @@ pub fn parse_pr_json(json: &str) -> Result<RawPrData> {
         url,
         state,
         base_branch,
+        head_branch,
         merge_commit,
     })
 }
