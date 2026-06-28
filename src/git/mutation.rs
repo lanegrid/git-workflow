@@ -66,17 +66,6 @@ pub fn pull_ff_only(remote: &str, branch: &str, verbose: bool) -> Result<()> {
     git_run(&["pull", remote, branch, "--ff-only", "--quiet"], verbose)
 }
 
-/// Pull from a remote branch
-pub fn pull(remote: &str, branch: &str, verbose: bool) -> Result<()> {
-    // Try ff-only first (safer), then fallback to normal pull
-    let result = git_run(&["pull", remote, branch, "--ff-only", "--quiet"], verbose);
-    if result.is_err() {
-        // If ff-only fails (diverged history), try normal pull
-        git_run(&["pull", remote, branch, "--quiet"], verbose)?;
-    }
-    Ok(())
-}
-
 /// Delete a local branch (safe delete, requires merge)
 pub fn delete_branch(branch: &str, verbose: bool) -> Result<()> {
     git_run(&["branch", "-d", branch], verbose)

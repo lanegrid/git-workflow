@@ -1,5 +1,6 @@
 //! `gw abandon` command - Abandon current changes and return to home branch
 
+use super::helpers;
 use crate::error::{GwError, Result};
 use crate::git;
 use crate::output;
@@ -40,11 +41,9 @@ pub fn run(verbose: bool) -> Result<()> {
     // Already on home branch with clean working directory and no untracked files
     if !has_changes && !has_untracked && current == home_branch {
         output::success("Already on home branch with clean working directory");
-        // Still sync with default remote
-        output::info(&format!("Syncing with {}...", default_remote));
+        // Still sync with default remote (fast-forward only; stop on divergence)
         git::fetch_prune(verbose)?;
-        git::pull("origin", default_branch, verbose)?;
-        output::success("Synced");
+        helpers::pull_with_output(&default_remote, default_branch, verbose)?;
         return Ok(());
     }
 
@@ -87,11 +86,9 @@ pub fn run(verbose: bool) -> Result<()> {
         output::success(&format!("Switched to {}", output::bold(home_branch)));
     }
 
-    // Sync with default remote
-    output::info(&format!("Syncing with {}...", default_remote));
+    // Sync with default remote (fast-forward only; stop on divergence)
     git::fetch_prune(verbose)?;
-    git::pull("origin", default_branch, verbose)?;
-    output::success("Synced");
+    helpers::pull_with_output(&default_remote, default_branch, verbose)?;
 
     output::ready("Ready", home_branch);
     output::hints(&["gw new feature/your-feature  # Start fresh"]);

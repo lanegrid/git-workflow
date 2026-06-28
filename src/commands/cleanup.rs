@@ -2,6 +2,7 @@
 //!
 //! Uses GitHub PR information to make smart decisions about branch deletion.
 
+use super::helpers;
 use crate::error::{GwError, Result};
 use crate::git;
 use crate::github::{self, PrState};
@@ -99,10 +100,10 @@ pub fn run(branch_name: Option<String>, verbose: bool) -> Result<()> {
             output::success(&format!("Switched to {}", output::bold(home_branch)));
         }
 
-        // Sync home branch with default remote (only after switching)
-        output::info(&format!("Syncing with {}...", default_remote));
-        git::pull("origin", default_branch, verbose)?;
-        output::success("Synced");
+        // Sync home branch with default remote (only after switching).
+        // Fast-forward only: if home has diverged from origin we stop rather
+        // than silently creating a merge commit.
+        helpers::pull_with_output(&default_remote, default_branch, verbose)?;
     }
 
     // Delete the local branch
