@@ -1,6 +1,6 @@
 ---
 name: git-workflow
-description: Development workflow using the gw CLI for feature branches, PRs, worktrees, and cleanup
+description: How to make code changes in this repo step by step with the `gw` tool — start a branch, save your work, and send it for review as a pull request (PR). Use this whenever you change any file here.
 allowed-tools: Bash(gw*), Bash(git-workflow*), Bash(gh*), Bash(git*), Read, Edit, Grep, Glob, TaskStop
 ---
 
