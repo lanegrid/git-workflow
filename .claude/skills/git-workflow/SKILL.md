@@ -2,12 +2,13 @@
 name: git-workflow
 description: Development workflow using gw CLI for feature branches, PRs, and cleanup
 argument-hint: <command> [args]
-allowed-tools: Bash(gw*), Bash(git-workflow*), Bash(gh*), Bash(git*), Bash(mise*), Bash(cargo*), Read, Edit, Grep, Glob
+allowed-tools: Bash(gw*), Bash(git-workflow*), Bash(gh*), Bash(git*), Bash(mise*), Bash(cargo*), Read, Edit, Grep, Glob, TaskStop
 ---
 
 # git-workflow Development
 
-Use `gw` CLI for all git workflow operations in this project.
+Use the `gw` CLI for all git workflow operations in this project. `gw` is
+worktree-aware and tells you the next action via `gw status`.
 
 ## Current State
 
@@ -32,14 +33,42 @@ Parse `$ARGUMENTS` and execute the appropriate workflow:
 2. Run `mise run verify` to check code quality
 3. Push branch: `git push -u origin <branch>`
 4. Create PR: `gh pr create --fill` or with provided title
-5. Open PR in browser: `gw open`
+5. Watch it to completion: launch `gw await` as a background task (see `await`)
 
 ### `await` - Watch the PR to completion, then clean up
 
-1. From the feature branch, run `gw await` (optionally in the background)
-2. Waits for CI (`gh pr checks --watch`), then watches the PR until merged/closed
-3. On merge: notifies (`$GW_NOTIFY_CMD`) and runs cleanup automatically
-4. Flags: `--open` (open browser first), `--no-wait` (skip CI), `--no-cleanup`, `--interval <secs>`
+Run from the feature branch — best launched as a background task right after
+the PR is created:
+
+```
+[Bash(run_in_background=true)] gw await
+```
+
+Three phases run automatically:
+
+1. **CI wait** — `gh pr checks --watch`
+2. **Merge watch** — polls the PR state every `--interval`s (default 30)
+   - MERGED → `$GW_NOTIFY_CMD` notification → `gw cleanup` → exit
+   - CLOSED → message → exit
+
+Flags: `--open` (open in browser first), `--no-wait` (skip CI wait),
+`--no-cleanup` (stop after merge), `--interval <secs>`.
+
+**Singleton rule — only ONE watcher per PR:**
+
+- Launch `gw await` **once**, after the final push, when no more changes are expected.
+- If CI fails and you need to push a fix: **stop the existing watcher** with
+  `TaskStop` first, then fix, push, and relaunch.
+- Never run multiple `gw await` watchers for the same PR.
+
+**When background output arrives** via `<system-reminder>`, you MUST:
+
+1. Read the watcher's output file.
+2. Report the result to the user immediately (merged/closed, cleanup success/failure).
+
+### `open` - Open the PR in the browser
+
+1. Run `gw open` to open the current branch's PR in the browser
 
 ### `cleanup [branch]` - Clean up merged branch
 
@@ -68,6 +97,28 @@ Parse `$ARGUMENTS` and execute the appropriate workflow:
 
 1. Run `gw undo` to soft reset HEAD~1
 
+## Proactive Workflow
+
+**Always run `gw status` and follow the "Next:" action.** It detects working
+directory state, upstream sync state, and PR state, then suggests what to do:
+
+| Status Output | Action |
+|--------------|--------|
+| `Next: start new work` | `gw new feature/...` |
+| `Next: commit changes` | `git add -A && git commit -m "..."` |
+| `Next: push to remote` | `git push -u origin <branch>` |
+| `Next: create pull request` | `gh pr create -a "@me" -t "..."` |
+| `Waiting: PR #N in review` | `gw await` (watch to merge) or `gw open` |
+| `Next: cleanup merged branch` | `gw cleanup` |
+| `Next: rebase on latest main` | `git fetch --prune && git rebase origin/main` |
+| `Next: sync (base 'X' was merged)` | `gw sync` |
+
+## Pitfalls
+
+- **Do not `git checkout main`** — use `gw home` instead (worktree conflict)
+- **Avoid `git stash`** — use `gw pause` instead (WIP commit, safer worktree switching)
+- **Do not manually rebase stacked PRs** — use `gw sync` instead (updates GitHub PR base + rebases)
+
 ## Workflow Examples
 
 **Start a new feature:**
@@ -75,19 +126,21 @@ Parse `$ARGUMENTS` and execute the appropriate workflow:
 /git-workflow new feature/add-command
 ```
 
-**Create PR after implementing:**
+**Create PR, then watch it to completion:**
 ```
 /git-workflow pr "Add new command for X"
+# then, in the background:
+gw await
 ```
 
-**Clean up after PR merged:**
+**Clean up after PR merged (manual):**
 ```
 /git-workflow cleanup
 ```
 
 ## Before PR Checklist
 
-Always run before creating PR:
+Always run before creating a PR:
 ```bash
 mise run verify
 ```
@@ -97,6 +150,10 @@ mise run verify
 - Always use `gw` commands for branch operations
 - Run `mise run verify` before pushing
 - Use conventional commit messages (feat:, fix:, chore:, etc.)
+- Browser open (`gw open`/`--open`) and merge notification (`gw await`) are
+  configured via env in your dotfiles, not the CLI:
+  - `GW_OPEN_URL_CMD` → script that opens a URL (e.g. a dedicated Chrome profile)
+  - `GW_NOTIFY_CMD` → script that shows a notification (e.g. macOS `osascript`)
 
 ## Cleanup (Dogfooding)
 
