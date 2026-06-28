@@ -193,6 +193,30 @@ pub fn get_default_remote_branch() -> Result<String> {
     }
 }
 
+/// Get the default branch name (e.g. "main" or "master"), without the remote prefix.
+///
+/// Prefers the remote's default branch; falls back to a local `main`/`master`
+/// for repositories without a configured `origin`. This is the single source of
+/// truth for "the trunk branch", replacing scattered hardcoded "main" literals.
+pub fn default_branch_name() -> Result<String> {
+    if let Ok(remote) = get_default_remote_branch() {
+        return Ok(remote
+            .strip_prefix("origin/")
+            .unwrap_or(&remote)
+            .to_string());
+    }
+    if branch_exists("main") {
+        return Ok("main".to_string());
+    }
+    if branch_exists("master") {
+        return Ok("master".to_string());
+    }
+    Err(GwError::Other(
+        "Could not determine the default branch (no origin/main, origin/master, or local main/master)"
+            .to_string(),
+    ))
+}
+
 /// Check if HEAD is detached
 pub fn is_detached_head() -> bool {
     current_branch().map(|b| b == "HEAD").unwrap_or(false)

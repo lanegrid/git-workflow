@@ -6,8 +6,8 @@ use crate::git;
 /// Type of git repository
 #[derive(Debug, Clone)]
 pub enum RepoType {
-    /// Main repository (home branch is "main")
-    MainRepo,
+    /// Main repository (home branch is the repo's default branch, e.g. main/master)
+    MainRepo { home_branch: String },
     /// Worktree (home branch is directory name)
     Worktree { home_branch: String },
 }
@@ -19,14 +19,16 @@ impl RepoType {
             let home_branch = git::current_dir_name()?;
             Ok(RepoType::Worktree { home_branch })
         } else {
-            Ok(RepoType::MainRepo)
+            // The main repo's home is the default branch — main OR master.
+            let home_branch = git::default_branch_name()?;
+            Ok(RepoType::MainRepo { home_branch })
         }
     }
 
     /// Get the home branch for this repository type
     pub fn home_branch(&self) -> &str {
         match self {
-            RepoType::MainRepo => "main",
+            RepoType::MainRepo { home_branch } => home_branch,
             RepoType::Worktree { home_branch } => home_branch,
         }
     }
