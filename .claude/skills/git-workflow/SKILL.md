@@ -189,5 +189,3 @@ chore: bump version to 0.6.0
 > `mise run cleanup` instead of `gw cleanup` to also reinstall `gw` after the
 > branch is deleted. The skill itself only uses `gw cleanup`; this is a repo-local
 > convenience, not part of the workflow.
-</content>
-</invoke>
