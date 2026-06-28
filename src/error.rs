@@ -14,6 +14,12 @@ pub enum GwError {
     #[error("Git command failed: {0}")]
     GitCommandFailed(String),
 
+    #[error("Cannot switch to '{branch}' because it is checked out in another worktree{}", .path.as_deref().map(|p| format!(" ({p})")).unwrap_or_default())]
+    BranchCheckedOutElsewhere {
+        branch: String,
+        path: Option<String>,
+    },
+
     #[error("Branch '{0}' already exists")]
     BranchAlreadyExists(String),
 
