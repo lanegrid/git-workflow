@@ -1,14 +1,15 @@
 ---
 name: git-workflow
-description: Development workflow using gw CLI for feature branches, PRs, and cleanup
+description: Development workflow using the gw CLI for feature branches, PRs, worktrees, and cleanup
 argument-hint: <command> [args]
-allowed-tools: Bash(gw*), Bash(git-workflow*), Bash(gh*), Bash(git*), Bash(mise*), Bash(cargo*), Read, Edit, Grep, Glob, TaskStop
+allowed-tools: Bash(gw*), Bash(git-workflow*), Bash(gh*), Bash(git*), Read, Edit, Grep, Glob, TaskStop
 ---
 
-# git-workflow Development
+# Git Workflow and Conventions
 
-Use the `gw` CLI for all git workflow operations in this project. `gw` is
-worktree-aware and tells you the next action via `gw status`.
+Worktree-aware Git workflow for this repo. We dogfood our own `gw` CLI, so use
+`gw`, `git`, and `gh` directly. `gw` is worktree-aware and always tells you the
+next action via `gw status`.
 
 ## Current State
 
@@ -18,28 +19,79 @@ Branch:
 Status:
 !`gw status 2>/dev/null || echo "gw not installed - run: cargo install --path ."`
 
-## Commands
+## Quick Reference
 
-Parse `$ARGUMENTS` and execute the appropriate workflow:
+```sh
+# Basic operations
+gw status              # Show current state + next action
+gw home                # Switch to home branch + sync with origin/main
+gw new <branch>        # Create new branch from origin/main
+gw cleanup [branch]    # Delete merged branch + return to home
 
-### `new <branch-name>` - Start new feature/fix
+# Pause / discard / undo
+gw pause [message]     # WIP commit + return to home
+gw abandon             # Discard all changes + return to home
+gw undo                # Soft reset HEAD~1 (undo last commit)
 
-1. Run `gw new <branch-name>` to create branch from origin/main
-2. Confirm branch created successfully
+# Stacked PRs
+gw sync                # Sync current branch after base PR merged (rebase + force push)
 
-### `pr [title]` - Create Pull Request
+# PR lifecycle
+gh pr create -a "@me"  # Create the PR
+gw open                # Open current branch's PR in the browser
+gw await --open        # Open, then watch CI → merge → cleanup (run in background)
 
-1. Ensure all changes are committed
-2. Run `mise run verify` to check code quality
-3. Push branch: `git push -u origin <branch>`
-4. Create PR: `gh pr create --fill` or with provided title
-5. Open it and watch to completion: launch `gw await --open` as a background task (see `await`)
+# Worktree pool (parallel agent execution)
+gw worktree pool warm <count>   # Pre-create N worktrees
+gw worktree pool status         # Show available/total
+gw worktree pool acquire        # Acquire one (prints path to stdout)
+gw worktree pool release <name> # Release back to the pool
+gw worktree pool drain          # Remove all pool worktrees
+```
 
-### `await` - Watch the PR to completion, then clean up
+> **⚠️ Pitfalls**
+> - **Do not run `git checkout main`** — use `gw home` instead (worktree conflict).
+> - **Do not use `git stash`** — use `gw pause` instead (WIP commit, safer worktree switching).
+> - **Do not manually rebase stacked PRs** — use `gw sync` instead (updates the GitHub PR base + rebases + force pushes).
 
-Run from the feature branch — best launched as a background task right after
-the PR is created. Use `--open` so it opens the PR in the browser first, then
-watches:
+> **🚨 Mandatory rule: after creating a PR, immediately launch `gw await --open` as a background task.**
+> The moment `gh pr create` returns a URL, in that same turn start
+> `gw await --open` with `Bash(run_in_background=true)`. Do **not** ask the user
+> "what next?", wait for CI, or stop — `gw await` runs CI wait → browser open →
+> merge watch → cleanup on its own. Skipping it means the post-merge cleanup
+> never runs and the branch is left behind. This is not optional.
+
+## Standard Workflow: Code → PR
+
+**Every code change becomes a PR.** Follow this flow:
+
+```
+1. Branch   → gw new feature/your-feature
+2. Code     → make changes
+3. Commit   → git add -A && git commit -m "feat: ..."
+4. Push     → git push -u origin feature/your-feature
+5. PR       → gh pr create -a "@me" -t "feat: ..."
+6. Await    → gw await --open        (REQUIRED — background task)
+7. Cleanup  → (auto: gw await runs gw cleanup on merge)
+```
+
+**Never skip step 6.** As soon as the `gh pr create` URL appears, launch
+`gw await --open` in the background in the same assistant turn — the user expects
+CI / merge / cleanup to be handled end to end the moment the PR exists.
+
+### If you have uncommitted changes on the home branch
+
+This happens when you made changes before creating a branch. Fix it:
+
+```sh
+gw new feature/your-feature   # creates the branch, keeps your changes
+gw status                     # follow the suggested "Next:" action
+```
+
+### gw await — PR lifecycle in one command (background task)
+
+Run from the feature branch, best launched as a background task right after the
+PR is created. Use `--open` to open the PR in the browser first, then watch:
 
 ```
 [Bash(run_in_background=true)] gw await --open
@@ -47,19 +99,19 @@ watches:
 
 Three phases run automatically:
 
-1. **CI wait** — `gh pr checks --watch`
-2. **Merge watch** — polls the PR state every `--interval`s (default 30)
-   - MERGED → `$GW_NOTIFY_CMD` notification → `gw cleanup` → exit
-   - CLOSED → message → exit
+1. **CI wait** — `gh pr checks --watch` (skip with `--no-wait`).
+2. **Browser open** — opens the PR page (only with `--open`).
+3. **Merge watch** — polls PR state every `--interval`s (default 30):
+   - `MERGED` → `$GW_NOTIFY_CMD` notification → `gw cleanup` → exit
+   - `CLOSED` → message → exit
 
-Flags: `--open` (open in browser first), `--no-wait` (skip CI wait),
-`--no-cleanup` (stop after merge), `--interval <secs>`.
+Flags: `--open`, `--no-wait`, `--no-cleanup` (stop after merge), `--interval <secs>`.
 
 **Singleton rule — only ONE watcher per PR:**
 
 - Launch `gw await` **once**, after the final push, when no more changes are expected.
-- If CI fails and you need to push a fix: **stop the existing watcher** with
-  `TaskStop` first, then fix, push, and relaunch.
+- If CI fails and you must push a fix: **stop the existing watcher** with `TaskStop`
+  first, then fix, push, and relaunch.
 - Never run multiple `gw await` watchers for the same PR.
 
 **When background output arrives** via `<system-reminder>`, you MUST:
@@ -67,41 +119,11 @@ Flags: `--open` (open in browser first), `--no-wait` (skip CI wait),
 1. Read the watcher's output file.
 2. Report the result to the user immediately (merged/closed, cleanup success/failure).
 
-### `open` - Open the PR in the browser
-
-1. Run `gw open` to open the current branch's PR in the browser
-
-### `cleanup [branch]` - Clean up merged branch
-
-1. Run `mise run cleanup` to delete merged branch and reinstall gw
-2. Returns to home branch automatically
-3. Reinstalls gw if running from main worktree (for dogfooding)
-
-### `status` - Show current state
-
-1. Run `gw status` to show repository state
-2. Display suggested next action
-
-### `home` - Return to home branch
-
-1. Run `gw home` to switch to home branch and sync
-
-### `pause [message]` - Pause current work
-
-1. Run `gw pause [message]` to create WIP commit and return home
-
-### `sync` - Sync after base PR merged
-
-1. Run `gw sync` to update base and rebase
-
-### `undo` - Undo last commit
-
-1. Run `gw undo` to soft reset HEAD~1
-
 ## Proactive Workflow
 
 **Always run `gw status` and follow the "Next:" action.** It detects working
-directory state, upstream sync state, and PR state, then suggests what to do:
+directory state, upstream sync state, home-branch state, and PR state, then
+suggests what to do:
 
 | Status Output | Action |
 |--------------|--------|
@@ -109,59 +131,72 @@ directory state, upstream sync state, and PR state, then suggests what to do:
 | `Next: commit changes` | `git add -A && git commit -m "..."` |
 | `Next: push to remote` | `git push -u origin <branch>` |
 | `Next: create pull request` | `gh pr create -a "@me" -t "..."` |
-| `Waiting: PR #N in review` | `gw await` (watch to merge) or `gw open` |
+| `Waiting: PR #N in review` | `gw await --open` (watch to merge) or `gw open` |
 | `Next: cleanup merged branch` | `gw cleanup` |
 | `Next: rebase on latest main` | `git fetch --prune && git rebase origin/main` |
 | `Next: sync (base 'X' was merged)` | `gw sync` |
 
-## Pitfalls
+## Worktree Model
 
-- **Do not `git checkout main`** — use `gw home` instead (worktree conflict)
-- **Avoid `git stash`** — use `gw pause` instead (WIP commit, safer worktree switching)
-- **Do not manually rebase stacked PRs** — use `gw sync` instead (updates GitHub PR base + rebases)
+This project supports git worktrees. Each worktree has a **home branch**.
 
-## Workflow Examples
+- The main worktree's home is `main`.
+- Never checkout `main` directly from another worktree — use `gw home`.
+- `gw` handles worktree boundaries automatically.
 
-**Start a new feature:**
+### Pool Worktrees (for parallel agent execution)
+
+Use the pre-warmed pool when running multiple agents in parallel.
+
+```sh
+# 1. Pre-create once
+gw worktree pool warm 3
+
+# 2. Check availability (confirm available > 0)
+gw worktree pool status
+
+# 3. Acquire (path is printed to stdout)
+WORKTREE_PATH=$(gw worktree pool acquire)
+
+# 4. Run the agent inside that worktree
+
+# 5. Always release when done (success or failure)
+gw worktree pool release <name>
 ```
-/git-workflow new feature/add-command
+
+> **Important:** forgetting to release drains the pool. Always release, even on error.
+
+## Commit Conventions
+
+Conventional Commits style:
+
+```
+feat:     new feature
+fix:      bug fix
+chore:    build / tooling / housekeeping
+docs:     documentation
+refactor: refactor (no behavior change)
+test:     tests
 ```
 
-**Create PR, then open + watch it to completion:**
-```
-/git-workflow pr "Add new command for X"
-# then, in the background:
-gw await --open
-```
+Examples:
 
-**Clean up after PR merged (manual):**
 ```
-/git-workflow cleanup
-```
-
-## Before PR Checklist
-
-Always run before creating a PR:
-```bash
-mise run verify
+feat: add gw await command
+fix: handle detached HEAD in status
+chore: bump version to 0.6.0
 ```
 
 ## Notes
 
-- Always use `gw` commands for branch operations
-- Run `mise run verify` before pushing
-- Use conventional commit messages (feat:, fix:, chore:, etc.)
-- Browser open (`gw open`/`--open`) and merge notification (`gw await`) are
+- Browser open (`gw open` / `--open`) and merge notification (`gw await`) are
   configured via env in your dotfiles, not the CLI:
   - `GW_OPEN_URL_CMD` → script that opens a URL (e.g. a dedicated Chrome profile)
   - `GW_NOTIFY_CMD` → script that shows a notification (e.g. macOS `osascript`)
 
-## Cleanup (Dogfooding)
-
-Use `mise run cleanup` instead of `gw cleanup` to automatically reinstall gw after cleanup:
-
-```bash
-mise run cleanup  # gw cleanup + reinstall (main worktree only)
-```
-
-This automatically detects if you're in the main worktree and reinstalls gw. In a worktree, it skips the install step.
+> **Dogfooding note (optional):** in the main worktree you can run
+> `mise run cleanup` instead of `gw cleanup` to also reinstall `gw` after the
+> branch is deleted. The skill itself only uses `gw cleanup`; this is a repo-local
+> convenience, not part of the workflow.
+</content>
+</invoke>
