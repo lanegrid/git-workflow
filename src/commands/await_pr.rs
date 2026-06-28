@@ -14,7 +14,9 @@
 //!
 //! - Wait for CI: poll until the checks reach a verdict (skip with `--no-wait`).
 //!   "Not registered yet" and "pending" are both just *keep waiting*; only
-//!   pass/fail are terminal.
+//!   pass/fail are terminal. Watching the PR is the irreducible job, so this
+//!   step also bails the moment the PR itself merges or closes — otherwise a
+//!   branch that never gets CI would wait here forever even after merge.
 //! - On CI pass: open the PR in the browser (with `--open`), then watch for merge.
 //! - On CI fail: report and stop, so you can fix → push → rerun `await`.
 //! - Watch for merge: poll the PR state every `--interval` seconds.
@@ -89,9 +91,15 @@ pub fn run(
     }
 
     // Phase 1: wait for CI. A CI failure stops here (the PR can't merge until
-    // it's fixed) unless the user opted into watching anyway.
+    // it's fixed) unless the user opted into watching anyway. If the PR merges
+    // or closes while we wait, CI is moot — react to that directly.
     if !no_wait {
-        wait_for_ci(pr.number, ignore_ci_failure, interval, verbose)?;
+        match wait_for_ci(pr.number, ignore_ci_failure, interval, verbose)? {
+            CiWait::Proceed => {}
+            CiWait::Terminal(state) => {
+                return react_to_terminal(state, pr.number, &head_branch, no_cleanup, verbose);
+            }
+        }
     }
 
     // Phase 2: CI is green (or skipped) — surface the PR for review/merge.
@@ -111,21 +119,32 @@ pub fn run(
     let terminal = poll_until_terminal(pr.number, poll_secs);
 
     // Phase 4: react to the terminal state.
+    react_to_terminal(terminal, pr.number, &head_branch, no_cleanup, verbose)
+}
+
+/// React to a PR's terminal state: clean up on merge, report on close.
+fn react_to_terminal(
+    terminal: PrState,
+    pr_number: u64,
+    head_branch: &str,
+    no_cleanup: bool,
+    verbose: bool,
+) -> Result<()> {
     match terminal {
         PrState::Merged { .. } => {
-            output::success(&format!("PR #{} merged!", pr.number));
-            notify(&format!("PR #{} merged", pr.number), verbose);
-            finish_merged(&head_branch, no_cleanup, verbose)
+            output::success(&format!("PR #{} merged!", pr_number));
+            notify(&format!("PR #{} merged", pr_number), verbose);
+            finish_merged(head_branch, no_cleanup, verbose)
         }
         PrState::Closed => {
-            output::warn(&format!("PR #{} was closed without merging", pr.number));
+            output::warn(&format!("PR #{} was closed without merging", pr_number));
             notify(
-                &format!("PR #{} closed without merging", pr.number),
+                &format!("PR #{} closed without merging", pr_number),
                 verbose,
             );
             Ok(())
         }
-        PrState::Open => unreachable!("poll_until_terminal only returns terminal states"),
+        PrState::Open => unreachable!("react_to_terminal is only called with terminal states"),
     }
 }
 
@@ -165,14 +184,28 @@ enum CiState {
     Failed,
 }
 
+/// Outcome of the CI wait: either CI settled and we should keep watching for
+/// merge, or the PR reached a terminal state while we waited.
+enum CiWait {
+    /// CI passed (or a failure was ignored) — proceed to watch for merge.
+    Proceed,
+    /// The PR merged or closed before CI settled — react to it directly.
+    Terminal(PrState),
+}
+
 /// Wait for CI to reach a verdict, then report pass/fail.
 ///
 /// This is a plain state machine: poll the PR's checks until they settle.
 /// `NotStarted` (the "no checks reported" window right after a PR opens — when
 /// `await` is meant to be launched) and `Pending` are both just *keep waiting*;
 /// only `Passed`/`Failed` end the loop. There is deliberately **no** timeout —
-/// "wait for CI" means wait for CI. A repo with genuinely no CI should use
-/// `--no-wait` instead.
+/// "wait for CI" means wait for CI.
+///
+/// Each poll also checks whether the PR itself went terminal: a merged PR can't
+/// be gated on checks, and a branch that never registers any CI would otherwise
+/// wait here forever. When that happens we return [`CiWait::Terminal`] so the
+/// caller reacts (cleanup on merge) instead of hanging. (`--no-wait` still skips
+/// this phase entirely.)
 ///
 /// On `Failed`, the PR can't merge until it's fixed, so we stop and report it
 /// by default; `ignore_ci_failure` downgrades that to a warning and continues.
@@ -181,22 +214,27 @@ fn wait_for_ci(
     ignore_ci_failure: bool,
     interval: u64,
     verbose: bool,
-) -> Result<()> {
+) -> Result<CiWait> {
     let num = pr_number.to_string();
     let delay = Duration::from_secs(interval.max(1));
     output::info(&format!("Waiting for CI checks on PR #{num}..."));
     loop {
+        // Watching the PR is the irreducible job. If it already merged or
+        // closed, stop waiting on CI regardless of where the checks stand.
+        if let Some(state) = terminal_state(&num) {
+            return Ok(CiWait::Terminal(state));
+        }
         match query_ci_state(&num, verbose)? {
             CiState::NotStarted | CiState::Pending => thread::sleep(delay),
             CiState::Passed => {
                 output::success("CI checks passed");
-                return Ok(());
+                return Ok(CiWait::Proceed);
             }
             CiState::Failed if ignore_ci_failure => {
                 output::warn(
                     "CI checks did not all pass — continuing anyway (--ignore-ci-failure)",
                 );
-                return Ok(());
+                return Ok(CiWait::Proceed);
             }
             CiState::Failed => {
                 return Err(GwError::Other(format!(
@@ -206,6 +244,20 @@ fn wait_for_ci(
                 )));
             }
         }
+    }
+}
+
+/// Return the PR's terminal state if it has merged or closed, else `None`.
+///
+/// Open PRs and transient lookup failures both yield `None`, so a caller polling
+/// this keeps waiting rather than aborting on a hiccup.
+fn terminal_state(selector: &str) -> Option<PrState> {
+    match github::get_pr_for_branch(selector) {
+        Ok(Some(pr)) => match pr.state {
+            PrState::Open => None,
+            terminal => Some(terminal),
+        },
+        _ => None,
     }
 }
 
