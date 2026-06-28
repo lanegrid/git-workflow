@@ -92,12 +92,28 @@ fn branch_exists(dir: &Path, branch: &str) -> bool {
 }
 
 /// Create a feature branch with a commit (branched from main)
+///
+/// The commit is also merged into `main` (without fast-forward) so the branch
+/// represents finished, merged work. `gw cleanup` only force-deletes branches it
+/// can confirm are merged; since no PR exists in the test environment, the local
+/// `git branch -d` must succeed on its own, which requires the work to be
+/// reachable from `main`. We leave the checkout on `name` afterwards so callers
+/// see the same starting state as before.
 fn create_feature_branch(dir: &Path, name: &str) {
     run_git(dir, &["checkout", "-b", name, "main"]);
     let filename = format!("{}.txt", name.replace('/', "-"));
     std::fs::write(dir.join(&filename), format!("work on {}", name)).expect("Failed to write file");
     run_git(dir, &["add", "."]);
     run_git(dir, &["commit", "-m", &format!("feat: work on {}", name)]);
+
+    // Merge the branch into main so it is reachable (i.e. "merged"), then return
+    // to the feature branch to preserve the caller's expected current branch.
+    run_git(dir, &["checkout", "main"]);
+    run_git(
+        dir,
+        &["merge", "--no-ff", "-m", &format!("Merge {}", name), name],
+    );
+    run_git(dir, &["checkout", name]);
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -245,6 +261,43 @@ fn test_cleanup_different_branch_with_uncommitted_changes_succeeds() {
     assert!(!branch_exists(local.path(), "feature-a"));
     // Uncommitted file should still be there
     assert!(local.path().join("dirty.txt").exists());
+}
+
+#[test]
+fn test_cleanup_does_not_force_delete_unmerged_local_branch() {
+    let origin = create_origin_repo();
+    let local = create_local_repo(origin.path());
+
+    // Create an unmerged, never-pushed branch with a real commit. There is no
+    // PR (gh has nothing to find), so cleanup cannot confirm the work is merged
+    // and must NOT force-delete it.
+    run_git(
+        local.path(),
+        &["checkout", "-b", "feature-unmerged", "main"],
+    );
+    std::fs::write(local.path().join("wip.txt"), "unmerged work").expect("Failed to write file");
+    run_git(local.path(), &["add", "."]);
+    run_git(local.path(), &["commit", "-m", "feat: unmerged work"]);
+
+    // Clean up from a different branch so the only thing under test is deletion.
+    run_git(local.path(), &["checkout", "main"]);
+
+    let output = run_gw(local.path(), &["cleanup", "feature-unmerged"]);
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+
+    // The branch (and its commit) must survive — losing it silently is the bug
+    // this guard prevents.
+    assert!(
+        branch_exists(local.path(), "feature-unmerged"),
+        "Unmerged branch must not be force-deleted without a confirmed merge. stdout: {}",
+        stdout
+    );
+    // And the user should be told it wasn't fully merged.
+    assert!(
+        stdout.contains("not fully merged"),
+        "Expected a 'not fully merged' notice, got: {}",
+        stdout
+    );
 }
 
 #[test]

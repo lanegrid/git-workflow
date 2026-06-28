@@ -70,7 +70,7 @@ pub fn run(branch_name: Option<String>, verbose: bool) -> Result<()> {
 
     // Query PR information from GitHub
     let pr_info = query_pr_info(&branch_to_delete);
-    let force_delete_allowed = should_allow_force_delete(&pr_info, &branch_to_delete);
+    let force_delete_allowed = should_allow_force_delete(&pr_info);
 
     // Safety check: unpushed commits (skip if PR is merged)
     if branch_exists && !force_delete_allowed {
@@ -180,8 +180,16 @@ fn display_pr_info(pr: &github::PrInfo) {
     ));
 }
 
-/// Determine if force delete should be allowed based on PR state
-fn should_allow_force_delete(pr_info: &Option<github::PrInfo>, branch: &str) -> bool {
+/// Determine if force delete should be allowed based on PR state.
+///
+/// `cleanup` is the "tidy up a merged branch" command, not "throw away local
+/// work". So force delete is allowed ONLY when we can positively confirm the PR
+/// was merged. Every other situation — open PR, closed-without-merge, no PR
+/// found, gh unavailable, or a network failure querying GitHub — is treated as
+/// "could not confirm it's safe", and we refuse to force-delete. The caller
+/// still attempts a plain `git branch -d`; if that fails the user is told to
+/// discard the work explicitly (`git branch -D` or `gw abandon`).
+fn should_allow_force_delete(pr_info: &Option<github::PrInfo>) -> bool {
     match pr_info {
         Some(pr) => match &pr.state {
             PrState::Merged { method, .. } => {
@@ -198,14 +206,10 @@ fn should_allow_force_delete(pr_info: &Option<github::PrInfo>, branch: &str) -> 
             }
         },
         None => {
-            // No PR info - check if remote branch exists
-            if git::remote_branch_exists(branch) {
-                output::info("No PR found but remote branch exists");
-                false
-            } else {
-                // Branch was never pushed or already deleted from remote
-                true
-            }
+            // No merged PR could be confirmed (no PR, gh unavailable, or lookup
+            // failed). Not safe to discard local commits automatically.
+            output::warn("No merged PR confirmed; will not force-delete unmerged commits");
+            false
         }
     }
 }
