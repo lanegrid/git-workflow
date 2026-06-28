@@ -1,7 +1,6 @@
 ---
 name: git-workflow
 description: Development workflow using the gw CLI for feature branches, PRs, worktrees, and cleanup
-argument-hint: <command> [args]
 allowed-tools: Bash(gw*), Bash(git-workflow*), Bash(gh*), Bash(git*), Read, Edit, Grep, Glob, TaskStop
 ---
 
@@ -10,14 +9,6 @@ allowed-tools: Bash(gw*), Bash(git-workflow*), Bash(gh*), Bash(git*), Read, Edit
 Worktree-aware Git workflow for this repo. We dogfood our own `gw` CLI, so use
 `gw`, `git`, and `gh` directly. `gw` is worktree-aware and always tells you the
 next action via `gw status`.
-
-## Current State
-
-Branch:
-!`git rev-parse --abbrev-ref HEAD`
-
-Status:
-!`gw status 2>/dev/null || echo "gw not installed - run: cargo install --path ."`
 
 ## Quick Reference
 
