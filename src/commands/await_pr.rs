@@ -13,11 +13,13 @@
 //! State machine:
 //!
 //! - Wait for CI: poll until the checks reach a verdict (skip with `--no-wait`).
-//!   "Not registered yet" and "pending" are both just *keep waiting*; only
-//!   pass/fail are terminal. Watching the PR is the irreducible job, so this
-//!   step also bails the moment the PR itself merges or closes — otherwise a
-//!   branch that never gets CI would wait here forever even after merge.
-//! - On CI pass: open the PR in the browser (with `--open`), then watch for merge.
+//!   "Pending" just *keeps waiting*; pass/fail are terminal. A branch with no CI
+//!   at all ("no checks reported", confirmed across a few polls) isn't waited on
+//!   — there's nothing to wait for, so we proceed. Watching the PR is the
+//!   irreducible job, so this step also bails the moment the PR itself merges or
+//!   closes.
+//! - On CI pass (or no CI): open the PR in the browser (with `--open`), then
+//!   watch for merge.
 //! - On CI fail: report and stop, so you can fix → push → rerun `await`.
 //! - Watch for merge: poll the PR state every `--interval` seconds.
 //! - On merge: notify, then `gw cleanup <head branch>` (skip with `--no-cleanup`).
@@ -171,10 +173,22 @@ fn finish_merged(head_branch: &str, no_cleanup: bool, verbose: bool) -> Result<(
     cleanup::run(Some(head_branch.to_string()), verbose)
 }
 
+/// How many consecutive "no checks reported" polls confirm a branch simply has
+/// no CI, rather than CI that hasn't registered yet. A few quick confirmations
+/// absorb the brief window after a push before GitHub Actions attaches its
+/// checks, without making no-CI repos wait long.
+const NO_CI_CONFIRMATIONS: u32 = 3;
+
+/// Delay between the quick "is there really no CI?" confirmation polls. Short
+/// and independent of `--interval` (the merge-watch cadence) so detecting a
+/// no-CI branch takes seconds, not a full merge-poll interval.
+const NO_CI_PROBE_DELAY: Duration = Duration::from_secs(2);
+
 /// Where a PR's CI checks are in their lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CiState {
-    /// No checks reported yet — CI may not have started. Keep waiting.
+    /// No checks reported. Either CI hasn't registered yet (keep waiting a few
+    /// polls) or the branch has no CI at all (proceed without waiting).
     NotStarted,
     /// Checks exist but haven't all finished. Keep waiting.
     Pending,
@@ -196,15 +210,20 @@ enum CiWait {
 /// Wait for CI to reach a verdict, then report pass/fail.
 ///
 /// This is a plain state machine: poll the PR's checks until they settle.
-/// `NotStarted` (the "no checks reported" window right after a PR opens — when
-/// `await` is meant to be launched) and `Pending` are both just *keep waiting*;
-/// only `Passed`/`Failed` end the loop. There is deliberately **no** timeout —
-/// "wait for CI" means wait for CI.
+/// `Pending` (checks exist but haven't finished) just *keeps waiting*; only
+/// `Passed`/`Failed` end the loop on a verdict. There is deliberately **no**
+/// timeout once real checks exist — "wait for CI" means wait for CI.
+///
+/// `NotStarted` ("no checks reported") is the ambiguous case: CI that hasn't
+/// registered yet vs. a branch with no CI at all. We confirm it across a few
+/// quick polls ([`NO_CI_CONFIRMATIONS`]); if checks still never appear, there's
+/// nothing to wait for, so we proceed (which lets `--open` open the PR and the
+/// merge watch begin) instead of hanging forever. The user shouldn't have to
+/// reach for `--no-wait` just because a repo has no CI.
 ///
 /// Each poll also checks whether the PR itself went terminal: a merged PR can't
-/// be gated on checks, and a branch that never registers any CI would otherwise
-/// wait here forever. When that happens we return [`CiWait::Terminal`] so the
-/// caller reacts (cleanup on merge) instead of hanging. (`--no-wait` still skips
+/// be gated on checks. When that happens we return [`CiWait::Terminal`] so the
+/// caller reacts (cleanup on merge) instead of waiting. (`--no-wait` still skips
 /// this phase entirely.)
 ///
 /// On `Failed`, the PR can't merge until it's fixed, so we stop and report it
@@ -218,6 +237,7 @@ fn wait_for_ci(
     let num = pr_number.to_string();
     let delay = Duration::from_secs(interval.max(1));
     output::info(&format!("Waiting for CI checks on PR #{num}..."));
+    let mut no_checks_streak = 0u32;
     loop {
         // Watching the PR is the irreducible job. If it already merged or
         // closed, stop waiting on CI regardless of where the checks stand.
@@ -225,7 +245,24 @@ fn wait_for_ci(
             return Ok(CiWait::Terminal(state));
         }
         match query_ci_state(&num, verbose)? {
-            CiState::NotStarted | CiState::Pending => thread::sleep(delay),
+            CiState::NotStarted => {
+                // No checks yet. Confirm a few times before concluding the
+                // branch simply has no CI — then proceed rather than hang.
+                no_checks_streak += 1;
+                if no_checks_streak >= NO_CI_CONFIRMATIONS {
+                    output::info(&format!(
+                        "No CI checks for PR #{num} — proceeding without waiting"
+                    ));
+                    return Ok(CiWait::Proceed);
+                }
+                thread::sleep(NO_CI_PROBE_DELAY);
+            }
+            // Checks appeared, so CI does exist — reset the no-CI counter and
+            // wait for them on the normal cadence.
+            CiState::Pending => {
+                no_checks_streak = 0;
+                thread::sleep(delay);
+            }
             CiState::Passed => {
                 output::success("CI checks passed");
                 return Ok(CiWait::Proceed);
