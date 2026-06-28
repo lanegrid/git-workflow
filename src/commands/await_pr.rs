@@ -1,14 +1,19 @@
-//! `gw await` command - Watch the current branch's PR to completion, then clean up.
+//! `gw await` command - Watch a specific PR to completion, then clean up.
 //!
 //! `await` is the closing bookend of the workflow. Its irreducible job is to
 //! *watch the PR until it reaches a terminal state* (merged or closed); the CI
 //! wait and the post-merge cleanup are adjacent steps composed on top, each
 //! toggleable by a flag.
 //!
+//! The PR is identified by **number**, not by the current branch. This keeps a
+//! background watcher bound to one PR even if you switch branches (e.g. while
+//! working a stacked PR), and lets the post-merge cleanup target the PR's own
+//! head branch rather than whatever happens to be checked out.
+//!
 //! Phases:
 //! 1. Wait for CI       — `gh pr checks --watch` (skip with `--no-wait`)
 //! 2. Watch for merge   — poll the PR state every `--interval` seconds
-//! 3. On merge          — notify, then `gw cleanup` (skip with `--no-cleanup`)
+//! 3. On merge          — notify, then `gw cleanup <head branch>` (skip with `--no-cleanup`)
 //!
 //! Environment-specific behavior stays in the user's dotfiles, not the CLI:
 //! - `--open` opens the URL via `GW_OPEN_URL_CMD`/`OPEN_URL_CMD` (see `gw open`)
@@ -24,10 +29,10 @@ use crate::error::{GwError, Result};
 use crate::git;
 use crate::github::{self, PrState};
 use crate::output;
-use crate::state::RepoType;
 
-/// Execute the `await` command
+/// Execute the `await` command for a specific PR number
 pub fn run(
+    pr_number: u64,
     open_browser: bool,
     no_wait: bool,
     no_cleanup: bool,
@@ -38,20 +43,7 @@ pub fn run(
         return Err(GwError::NotAGitRepository);
     }
 
-    let repo_type = RepoType::detect()?;
-    let home_branch = repo_type.home_branch();
-    let current = git::current_branch()?;
-
     println!();
-
-    if current == home_branch {
-        output::warn(&format!(
-            "On home branch '{}'. No PR to await.",
-            home_branch
-        ));
-        output::hints(&["gw new feature/your-feature  # Start a branch first"]);
-        return Ok(());
-    }
 
     if !github::is_gh_available() {
         return Err(GwError::Other(
@@ -59,14 +51,18 @@ pub fn run(
         ));
     }
 
-    let pr = match github::get_pr_for_branch(&current)? {
+    // Resolve the PR by number so the watcher is independent of the current branch.
+    let pr = match github::get_pr_for_branch(&pr_number.to_string())? {
         Some(pr) => pr,
         None => {
-            output::warn(&format!("No PR found for branch '{}'.", current));
-            output::hints(&["gh pr create -a \"@me\" -t \"...\"  # Create a PR first"]);
+            output::warn(&format!("No PR #{} found.", pr_number));
             return Ok(());
         }
     };
+
+    // The branch to clean up after merge is the PR's head branch, resolved from
+    // GitHub — never the current checkout (which may differ for stacked work).
+    let head_branch = pr.head_branch.clone();
 
     output::info(&format!("PR: #{} {}", pr.number, pr.title));
 
@@ -82,7 +78,7 @@ pub fn run(
     match &pr.state {
         PrState::Merged { .. } => {
             output::success(&format!("PR #{} is already merged", pr.number));
-            return finish_merged(&current, no_cleanup, verbose);
+            return finish_merged(&head_branch, no_cleanup, verbose);
         }
         PrState::Closed => {
             output::warn(&format!(
@@ -113,7 +109,7 @@ pub fn run(
         PrState::Merged { .. } => {
             output::success(&format!("PR #{} merged!", pr.number));
             notify(&format!("PR #{} merged", pr.number), verbose);
-            finish_merged(&current, no_cleanup, verbose)
+            finish_merged(&head_branch, no_cleanup, verbose)
         }
         PrState::Closed => {
             output::warn(&format!("PR #{} was closed without merging", pr.number));
@@ -127,16 +123,27 @@ pub fn run(
     }
 }
 
-/// Handle a merged PR: clean up the branch unless suppressed.
-fn finish_merged(branch: &str, no_cleanup: bool, verbose: bool) -> Result<()> {
+/// Handle a merged PR: clean up the PR's head branch unless suppressed.
+fn finish_merged(head_branch: &str, no_cleanup: bool, verbose: bool) -> Result<()> {
+    if head_branch.is_empty() {
+        // No head branch resolved (e.g. unexpected GitHub output). Don't risk
+        // deleting the wrong branch — leave cleanup to the user.
+        output::warn("Could not determine the PR's branch; skipping cleanup.");
+        output::hints(&["gw cleanup <branch>  # Delete the merged branch manually"]);
+        return Ok(());
+    }
     if no_cleanup {
-        output::ready("Merged", branch);
-        output::hints(&["gw cleanup  # Delete the merged branch when ready"]);
+        output::ready("Merged", head_branch);
+        let hint = format!(
+            "gw cleanup {}  # Delete the merged branch when ready",
+            head_branch
+        );
+        output::hints(&[&hint]);
         return Ok(());
     }
     println!();
-    output::info("Cleaning up merged branch...");
-    cleanup::run(None, verbose)
+    output::info(&format!("Cleaning up merged branch '{}'...", head_branch));
+    cleanup::run(Some(head_branch.to_string()), verbose)
 }
 
 /// Wait for CI checks to finish by delegating to `gh pr checks --watch`.

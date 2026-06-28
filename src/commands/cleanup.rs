@@ -130,7 +130,7 @@ pub fn run(branch_name: Option<String>, verbose: bool) -> Result<()> {
 
     if needs_switch {
         output::ready("Cleanup complete", home_branch);
-        output::hints(&["mise run git:new feature/your-feature  # Create new branch"]);
+        output::hints(&["gw new feature/your-feature  # Create new branch"]);
     } else {
         output::success(&format!(
             "Cleanup complete (stayed on {})",

@@ -133,7 +133,7 @@ impl<E: CommandExecutor> GitHubClient<E> {
                 "view",
                 branch,
                 "--json",
-                "number,title,url,state,baseRefName,mergeCommit,mergedAt",
+                "number,title,url,state,baseRefName,headRefName,mergeCommit,mergedAt",
             ],
         )?;
 
@@ -236,6 +236,7 @@ impl<E: CommandExecutor> GitHubClient<E> {
             url: raw.url,
             state,
             base_branch: raw.base_branch,
+            head_branch: raw.head_branch,
         })
     }
 

@@ -192,7 +192,7 @@ impl MockScenarioBuilder {
                 "view",
                 branch,
                 "--json",
-                "number,title,url,state,baseRefName,mergeCommit,mergedAt",
+                "number,title,url,state,baseRefName,headRefName,mergeCommit,mergedAt",
             ],
             CommandOutput::success(json),
         );
@@ -208,7 +208,7 @@ impl MockScenarioBuilder {
                 "view",
                 branch,
                 "--json",
-                "number,title,url,state,baseRefName,mergeCommit,mergedAt",
+                "number,title,url,state,baseRefName,headRefName,mergeCommit,mergedAt",
             ],
             CommandOutput::failure("no pull requests found for branch \"branch\""),
         );
@@ -224,7 +224,7 @@ impl MockScenarioBuilder {
                 "view",
                 branch,
                 "--json",
-                "number,title,url,state,baseRefName,mergeCommit,mergedAt",
+                "number,title,url,state,baseRefName,headRefName,mergeCommit,mergedAt",
             ],
             CommandOutput::failure("To get started with GitHub CLI, please run: gh auth login"),
         );
@@ -288,17 +288,17 @@ impl MockScenarioBuilder {
 /// Pre-built JSON responses for common PR scenarios
 pub mod fixtures {
     /// Open PR JSON
-    pub fn open_pr(number: u64, _branch: &str) -> String {
+    pub fn open_pr(number: u64, branch: &str) -> String {
         format!(
-            r#"{{"number":{},"title":"feat: add feature","url":"https://github.com/owner/repo/pull/{}","state":"OPEN","baseRefName":"main","mergeCommit":null,"mergedAt":null}}"#,
-            number, number
+            r#"{{"number":{},"title":"feat: add feature","url":"https://github.com/owner/repo/pull/{}","state":"OPEN","baseRefName":"main","headRefName":"{}","mergeCommit":null,"mergedAt":null}}"#,
+            number, number, branch
         )
     }
 
     /// Merged PR JSON (with merge commit)
     pub fn merged_pr(number: u64, merge_commit: &str) -> String {
         format!(
-            r#"{{"number":{},"title":"feat: merged feature","url":"https://github.com/owner/repo/pull/{}","state":"MERGED","baseRefName":"main","mergeCommit":{{"oid":"{}"}},"mergedAt":"2024-01-01T00:00:00Z"}}"#,
+            r#"{{"number":{},"title":"feat: merged feature","url":"https://github.com/owner/repo/pull/{}","state":"MERGED","baseRefName":"main","headRefName":"feature/merged","mergeCommit":{{"oid":"{}"}},"mergedAt":"2024-01-01T00:00:00Z"}}"#,
             number, number, merge_commit
         )
     }
@@ -306,7 +306,7 @@ pub mod fixtures {
     /// Merged PR JSON (rebase, no merge commit)
     pub fn merged_pr_rebase(number: u64) -> String {
         format!(
-            r#"{{"number":{},"title":"feat: rebased feature","url":"https://github.com/owner/repo/pull/{}","state":"MERGED","baseRefName":"main","mergeCommit":null,"mergedAt":"2024-01-01T00:00:00Z"}}"#,
+            r#"{{"number":{},"title":"feat: rebased feature","url":"https://github.com/owner/repo/pull/{}","state":"MERGED","baseRefName":"main","headRefName":"feature/rebased","mergeCommit":null,"mergedAt":"2024-01-01T00:00:00Z"}}"#,
             number, number
         )
     }
@@ -314,7 +314,7 @@ pub mod fixtures {
     /// Closed PR JSON
     pub fn closed_pr(number: u64) -> String {
         format!(
-            r#"{{"number":{},"title":"wip: abandoned","url":"https://github.com/owner/repo/pull/{}","state":"CLOSED","baseRefName":"main","mergeCommit":null,"mergedAt":null}}"#,
+            r#"{{"number":{},"title":"wip: abandoned","url":"https://github.com/owner/repo/pull/{}","state":"CLOSED","baseRefName":"main","headRefName":"feature/abandoned","mergeCommit":null,"mergedAt":null}}"#,
             number, number
         )
     }
@@ -322,7 +322,7 @@ pub mod fixtures {
     /// PR with Japanese title
     pub fn pr_with_japanese_title(number: u64) -> String {
         format!(
-            r#"{{"number":{},"title":"feat: 日本語タイトル","url":"https://github.com/owner/repo/pull/{}","state":"OPEN","baseRefName":"main","mergeCommit":null,"mergedAt":null}}"#,
+            r#"{{"number":{},"title":"feat: 日本語タイトル","url":"https://github.com/owner/repo/pull/{}","state":"OPEN","baseRefName":"main","headRefName":"feature/jp","mergeCommit":null,"mergedAt":null}}"#,
             number, number
         )
     }
@@ -330,7 +330,7 @@ pub mod fixtures {
     /// PR with develop base branch
     pub fn pr_with_develop_base(number: u64) -> String {
         format!(
-            r#"{{"number":{},"title":"feat: develop branch","url":"https://github.com/owner/repo/pull/{}","state":"OPEN","baseRefName":"develop","mergeCommit":null,"mergedAt":null}}"#,
+            r#"{{"number":{},"title":"feat: develop branch","url":"https://github.com/owner/repo/pull/{}","state":"OPEN","baseRefName":"develop","headRefName":"feature/develop-based","mergeCommit":null,"mergedAt":null}}"#,
             number, number
         )
     }

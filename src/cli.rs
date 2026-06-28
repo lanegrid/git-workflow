@@ -53,8 +53,12 @@ pub enum Commands {
     /// Open the PR for the current branch in the browser
     Open,
 
-    /// Watch the current branch's PR until merged or closed, then clean up
+    /// Watch a specific PR until merged or closed, then clean up its branch
     Await {
+        /// PR number to watch (required so the watcher stays bound to one PR
+        /// even if you switch branches, e.g. while working a stacked PR)
+        pr: u64,
+
         /// Also open the PR in the browser before watching
         #[arg(long)]
         open: bool,
@@ -121,15 +125,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn await_requires_pr_number() {
+        // Without a PR number, parsing must fail.
+        assert!(Cli::try_parse_from(["gw", "await"]).is_err());
+    }
+
+    #[test]
     fn await_defaults() {
-        let cli = Cli::try_parse_from(["gw", "await"]).unwrap();
+        let cli = Cli::try_parse_from(["gw", "await", "42"]).unwrap();
         match cli.command {
             Commands::Await {
+                pr,
                 open,
                 no_wait,
                 no_cleanup,
                 interval,
             } => {
+                assert_eq!(pr, 42);
                 assert!(!open);
                 assert!(!no_wait);
                 assert!(!no_cleanup);
@@ -144,6 +156,7 @@ mod tests {
         let cli = Cli::try_parse_from([
             "gw",
             "await",
+            "42",
             "--open",
             "--no-wait",
             "--no-cleanup",
@@ -153,11 +166,13 @@ mod tests {
         .unwrap();
         match cli.command {
             Commands::Await {
+                pr,
                 open,
                 no_wait,
                 no_cleanup,
                 interval,
             } => {
+                assert_eq!(pr, 42);
                 assert!(open);
                 assert!(no_wait);
                 assert!(no_cleanup);
