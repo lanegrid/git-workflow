@@ -54,6 +54,7 @@ Use `git-workflow` commands for git operations:
 - `git-workflow pause "message"` - Save WIP and switch context
 - `git-workflow cleanup` - Delete merged branch safely
 - `git-workflow sync` - Update after base PR merged
+- `git-workflow open` - Open the current branch's PR in the browser
 ```
 
 Or use the `/git-workflow` skill if configured.
@@ -85,12 +86,31 @@ git-workflow cleanup
 | `git-workflow status` | Show state and suggested next action |
 | `git-workflow home` | Return to home branch, sync with origin |
 | `git-workflow sync` | Sync current branch with origin/main |
+| `git-workflow open` | Open the current branch's PR in the browser |
 | `git-workflow cleanup [branch]` | Delete merged branch (checks PR status) |
 | `git-workflow pause [msg]` | WIP commit + return home |
 | `git-workflow abandon` | Discard changes + return home |
 | `git-workflow undo` | Soft reset last commit |
 
 > **Tip**: `gw` is available as a shorthand alias (e.g., `gw status`).
+
+### Opening PRs in the browser
+
+`gw open` looks up the PR for the current branch with `gh` and opens its URL.
+The program used to open the URL is resolved in this order:
+
+1. `$GW_OPEN_URL_CMD` — gw-specific override
+2. `$OPEN_URL_CMD` — generic override (shared with other tooling)
+3. OS default — `open` (macOS) or `xdg-open` (Linux)
+
+Set `GW_OPEN_URL_CMD`/`OPEN_URL_CMD` to a script that takes the URL as `$1`.
+This keeps environment-specific behavior (e.g. a dedicated Chrome profile) in
+your dotfiles instead of the CLI. Example:
+
+```bash
+# ~/.config/fish/config.fish (or your shell's rc)
+set -gx GW_OPEN_URL_CMD "$HOME/dotfiles/scripts/open-chrome-pr.sh"
+```
 
 ### Safety Features
 

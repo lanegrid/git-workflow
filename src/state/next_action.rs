@@ -161,7 +161,7 @@ impl NextAction {
                 }
                 println!();
                 println!("  gh pr checks --watch    # Wait for CI");
-                println!("  gh pr view --web        # Open in browser");
+                println!("  gw open                 # Open PR in browser");
             }
             NextAction::Cleanup => {
                 output::action("Next: cleanup merged branch");

@@ -32,7 +32,7 @@ Parse `$ARGUMENTS` and execute the appropriate workflow:
 2. Run `mise run verify` to check code quality
 3. Push branch: `git push -u origin <branch>`
 4. Create PR: `gh pr create --fill` or with provided title
-5. Open PR in browser: `open <PR_URL>`
+5. Open PR in browser: `gw open`
 
 ### `cleanup [branch]` - Clean up merged branch
 
