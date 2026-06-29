@@ -53,18 +53,27 @@ Example:
   gw home")]
     Home,
 
-    /// Create new branch from origin/main
+    /// Create new branch from origin/main (or the current branch with --stack)
     #[command(long_about = "\
 Create a new branch off a freshly fetched origin/main.
 
 If you already edited on your home branch, gw new carries those changes onto the
 new branch -- nothing is stranded on `main`.
 
-Example:
-  gw new feature/add-login")]
+Use --stack to base the new branch on the CURRENT branch instead, for stacked
+PRs. The new branch starts from your current branch's HEAD, and the create-PR
+hint becomes `gh pr create -B <parent>` so GitHub uses the right base.
+
+Examples:
+  gw new feature/add-login           # branch off a fresh origin/main
+  gw new feature/child --stack       # stack on top of the current branch")]
     New {
         /// Name of the branch to create (e.g., feature/add-login)
         branch: Option<String>,
+
+        /// Base the new branch on the current branch instead of origin/main (stacked PRs)
+        #[arg(long)]
+        stack: bool,
     },
 
     /// Delete merged branch and return to home

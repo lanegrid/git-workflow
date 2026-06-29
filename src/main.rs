@@ -18,7 +18,7 @@ fn main() -> ExitCode {
 
     let result = match cli.command {
         Commands::Home => commands::home::run(cli.verbose),
-        Commands::New { branch } => commands::new::run(branch, cli.verbose),
+        Commands::New { branch, stack } => commands::new::run(branch, stack, cli.verbose),
         Commands::Cleanup { branch } => commands::cleanup::run(branch, cli.verbose),
         Commands::Status => commands::status::run(),
         Commands::Pause { message } => commands::pause::run(message, cli.verbose),
