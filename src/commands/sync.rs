@@ -166,6 +166,10 @@ pub fn run(verbose: bool) -> Result<()> {
     output::info("  Force pushing...");
     git::force_push_with_lease(&current, verbose)?;
 
+    // The branch now targets the default branch, so it is no longer stacked --
+    // drop any locally recorded base so `gw status` stops treating it as such.
+    git::unset_branch_base(&current, verbose)?;
+
     println!();
     output::ready("Synced", &current);
     output::hints(&[

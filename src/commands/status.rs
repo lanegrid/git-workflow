@@ -98,6 +98,20 @@ pub fn run() -> Result<()> {
         }
     }
 
+    // Locally recorded stacked base (`gw new --stack`). Once a PR exists,
+    // GitHub's base is authoritative and shown above, so this only fills the
+    // pre-PR gap. Filtered to a real parent (not the default branch / self).
+    let recorded_base = if current != home_branch {
+        git::branch_base(&current).filter(|b| b != &default_branch && b != &current)
+    } else {
+        None
+    };
+    if pr_info.is_none() {
+        if let Some(base) = &recorded_base {
+            output::info(&format!("Base: {} (stacked, PR not created yet)", base));
+        }
+    }
+
     // Stash count
     let stash_count = git::stash_count();
     if stash_count > 0 {
@@ -113,6 +127,7 @@ pub fn run() -> Result<()> {
         pr_info.as_ref(),
         has_remote,
         base_pr_merged.as_deref(),
+        recorded_base.as_deref(),
     );
     next_action.display(&current);
 

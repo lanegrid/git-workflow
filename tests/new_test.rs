@@ -101,6 +101,70 @@ fn test_stack_branches_off_current_branch() {
     assert_eq!(current_branch(dir), "feature/child");
     // The child must start at the parent's HEAD, not origin/main.
     assert_eq!(run_git(dir, &["rev-parse", "HEAD"]), parent_head);
+
+    // The stacked base is recorded locally so the PR base can be suggested
+    // before the PR exists.
+    assert_eq!(
+        run_git(dir, &["config", "--get", "branch.feature/child.gwBase"]),
+        "feature/parent"
+    );
+}
+
+#[test]
+fn test_status_surfaces_recorded_stacked_base() {
+    let local = setup_repo();
+    let dir = local.path();
+
+    // Parent branch with an open-PR-shaped history, pushed.
+    assert!(run_gw(dir, &["new", "feature/parent"]).status.success());
+    run_git(dir, &["commit", "--allow-empty", "-m", "feat: parent"]);
+    run_git(dir, &["push", "-u", "origin", "feature/parent"]);
+
+    // Stack a child (records gwBase), commit and push so it's PR-ready.
+    assert!(
+        run_gw(dir, &["new", "feature/child", "--stack"])
+            .status
+            .success()
+    );
+    run_git(dir, &["commit", "--allow-empty", "-m", "feat: child"]);
+    run_git(dir, &["push", "-u", "origin", "feature/child"]);
+
+    // With no PR yet, status must surface the recorded base and put it in the
+    // create-PR hint as `-B`, so the stacked base can't be forgotten.
+    let output = run_gw(dir, &["status"]);
+    assert!(
+        output.status.success(),
+        "gw status failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let out = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert!(
+        out.contains("Base: feature/parent (stacked"),
+        "expected the pre-PR stacked base to be shown: {out}"
+    );
+    assert!(
+        out.contains("gh pr create") && out.contains("-B feature/parent"),
+        "expected the create-PR hint to carry -B feature/parent: {out}"
+    );
+}
+
+#[test]
+fn test_plain_new_records_no_base() {
+    let local = setup_repo();
+    let dir = local.path();
+
+    assert!(run_gw(dir, &["new", "feature/x"]).status.success());
+
+    // Plain new (base = origin/main) must not record a stacked base.
+    let output = Command::new("git")
+        .args(["config", "--get", "branch.feature/x.gwBase"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "plain new should not record a gwBase"
+    );
 }
 
 #[test]

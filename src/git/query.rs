@@ -96,6 +96,17 @@ pub fn remote_branch_exists(branch: &str) -> Result<bool> {
     }
 }
 
+/// Read the recorded base branch for a branch (`branch.<name>.gwBase`).
+///
+/// `gw new --stack` records the parent here so the workflow knows a branch is
+/// stacked *before* its PR exists; once a PR exists, GitHub's base is the source
+/// of truth instead. Returns `None` when unset (the branch targets the default
+/// branch). It is a local config read — no network.
+pub fn branch_base(branch: &str) -> Option<String> {
+    let value = git_output(&["config", "--get", &format!("branch.{branch}.gwBase")]).ok()?;
+    if value.is_empty() { None } else { Some(value) }
+}
+
 /// Get the current HEAD commit hash
 pub fn head_commit() -> Result<String> {
     git_output(&["rev-parse", "HEAD"])
