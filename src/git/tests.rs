@@ -196,6 +196,51 @@ fn test_checkout_new_branch() {
     assert_eq!(branch, "new-feature");
 }
 
+/// Commit a new file with the given subject.
+fn commit_file(dir: &Path, name: &str, subject: &str) {
+    std::fs::write(dir.join(name), name).expect("write file");
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", subject]);
+}
+
+/// Models `git::rebase_onto`: after a stacked base PR is squash-merged, a child
+/// branch must replay ONLY its own commits onto the trunk — not the base's
+/// (which a plain `git rebase` would double-apply).
+#[test]
+fn test_rebase_onto_replays_only_child_commits() {
+    let dir = create_temp_repo();
+    let p = dir.path();
+    let trunk = run_git(p, &["rev-parse", "--abbrev-ref", "HEAD"]); // main or master
+
+    // base: trunk - B - C
+    run_git(p, &["checkout", "-b", "base"]);
+    commit_file(p, "b.txt", "B");
+    commit_file(p, "c.txt", "C");
+
+    // child stacked on base: + D - E
+    run_git(p, &["checkout", "-b", "child"]);
+    commit_file(p, "d.txt", "D");
+    commit_file(p, "e.txt", "E");
+
+    // Squash-merge base into trunk: one commit with B+C's content, new SHA.
+    run_git(p, &["checkout", &trunk]);
+    run_git(p, &["merge", "--squash", "base"]);
+    run_git(p, &["commit", "-m", "S squashed base"]);
+
+    // Restack child onto trunk, excluding base's commits.
+    run_git(p, &["checkout", "child"]);
+    run_git(p, &["rebase", "--onto", &trunk, "base"]);
+
+    // Only D and E were replayed (newest first); B and C are NOT re-applied.
+    let log = run_git(p, &["log", &format!("{trunk}..HEAD"), "--format=%s"]);
+    assert_eq!(log.lines().collect::<Vec<_>>(), vec!["E", "D"]);
+
+    // base's content is present once (via the squash), child's content present.
+    for f in ["b.txt", "c.txt", "d.txt", "e.txt"] {
+        assert!(p.join(f).exists(), "{f} should exist after rebase --onto");
+    }
+}
+
 #[test]
 fn test_delete_branch() {
     let dir = create_temp_repo();

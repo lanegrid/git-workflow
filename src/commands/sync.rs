@@ -149,18 +149,32 @@ pub fn run(verbose: bool) -> Result<()> {
     println!();
     output::info("Syncing...");
 
-    // 8. Update PR base to default branch
-    output::info(&format!("  Updating PR base to {}...", default_branch));
-    github::update_pr_base(pr.number, default_branch)?;
-
-    // 9. Rebase on default remote
-    output::info(&format!("  Rebasing on {}...", default_remote));
-    if let Err(e) = git::rebase(&default_remote, verbose) {
+    // 8. Replay only THIS branch's commits onto the default branch.
+    //
+    // A plain `git rebase origin/main` would re-apply the base PR's commits
+    // too — doubled and conflict-prone once the base was squash-merged.
+    // `--onto origin/main <old-base>` replays only <old-base>..HEAD. We use the
+    // remote-tracking ref of the old base, which still points at the pre-merge
+    // tip (cleanup keeps the base branch alive while this PR targets it).
+    //
+    // Order matters: rebase first, then move the PR base, then push. Moving the
+    // base first would leave GitHub showing the new base while the branch still
+    // carried the old commits if the rebase then failed.
+    let old_base = format!("origin/{}", pr.base_branch);
+    output::info(&format!(
+        "  Rebasing commits after {} onto {}...",
+        old_base, default_remote
+    ));
+    if let Err(e) = git::rebase_onto(&default_remote, &old_base, verbose) {
         output::error("Rebase failed. You may need to resolve conflicts manually.");
         output::action("git rebase --continue  # After resolving conflicts");
         output::action("git rebase --abort     # To cancel");
         return Err(e);
     }
+
+    // 9. Update PR base to the default branch.
+    output::info(&format!("  Updating PR base to {}...", default_branch));
+    github::update_pr_base(pr.number, default_branch)?;
 
     // 10. Force push
     output::info("  Force pushing...");
