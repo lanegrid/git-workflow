@@ -142,6 +142,12 @@ pub fn run(branch_name: Option<String>, stack: bool, verbose: bool) -> Result<()
     // guard work to handle; `gh pr create` errors loudly on a missing base.)
     if let Some(base) = &pr_base {
         git::set_branch_base(&branch_name, base, verbose)?;
+        // Record the base tip SHA (= the fork point, since --stack branches off
+        // the current HEAD) so a later restack can `rebase --onto` even if the
+        // base branch has since been deleted.
+        if let Ok(sha) = git::head_commit() {
+            git::set_branch_base_sha(&branch_name, &sha, verbose)?;
+        }
     }
 
     if behind_count > 0 {

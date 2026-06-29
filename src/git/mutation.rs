@@ -173,17 +173,33 @@ pub fn set_branch_base(branch: &str, base: &str, verbose: bool) -> Result<()> {
     )
 }
 
-/// Clear a branch's recorded base (`branch.<name>.gwBase`).
+/// Record the base tip SHA a branch was stacked on (`branch.<name>.gwBaseSha`).
 ///
-/// A no-op (not an error) when the key is absent, so callers can clear
-/// unconditionally — e.g. `gw sync` after restacking a branch onto the default
-/// branch, where it is no longer stacked.
+/// A `git rebase --onto` boundary that survives the base branch being deleted.
+pub fn set_branch_base_sha(branch: &str, sha: &str, verbose: bool) -> Result<()> {
+    git_run(
+        &["config", &format!("branch.{branch}.gwBaseSha"), sha],
+        verbose,
+    )
+}
+
+/// Clear a branch's recorded base info (`branch.<name>.gwBase` and `.gwBaseSha`).
+///
+/// Each unset is a no-op (not an error) when the key is absent, so callers can
+/// clear unconditionally — e.g. `gw sync` after restacking a branch onto the
+/// default branch, where it is no longer stacked.
 pub fn unset_branch_base(branch: &str, verbose: bool) -> Result<()> {
+    unset_config_key(&format!("branch.{branch}.gwBase"), verbose)?;
+    unset_config_key(&format!("branch.{branch}.gwBaseSha"), verbose)
+}
+
+/// `git config --unset <key>`, treating "key absent" (exit 5) as success.
+fn unset_config_key(key: &str, verbose: bool) -> Result<()> {
     if verbose {
-        output::action(&format!("git config --unset branch.{branch}.gwBase"));
+        output::action(&format!("git config --unset {key}"));
     }
     let output = Command::new("git")
-        .args(["config", "--unset", &format!("branch.{branch}.gwBase")])
+        .args(["config", "--unset", key])
         .output()
         .map_err(|e| GwError::GitCommandFailed(format!("Failed to execute git: {e}")))?;
     // Exit code 5 = "key was not present"; treat as already-clear.
