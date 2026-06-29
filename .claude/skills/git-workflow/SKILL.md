@@ -77,14 +77,27 @@ gh pr create -a "@me" -B feature/parent -t "..."   # -B sets the PR base to the 
 
 | When | What | Why |
 |------|------|-----|
-| Next change builds on an open PR's branch | `gw new <child> --stack` (from the parent branch) | Bases the child on the parent's HEAD, not `origin/main`. |
-| Creating the stacked PR | `gh pr create -B <parent> ...` | A locally-stacked branch doesn't make GitHub default the base to the parent — set it explicitly with `-B`. |
-| Parent PR later merges | `gw sync` | Restacks the child onto `main` (updates base, rebases, force-pushes). The teardown half of stacking. |
+| Next change builds on an open PR's branch | `gw new <child> --stack` (from the parent branch) | Bases the child on the parent's HEAD, not `origin/main`. Records the parent (and its tip SHA) so the rest of the flow knows it's stacked. |
+| Creating the stacked PR | `gh pr create -B <parent> ...` (or follow `gw status`) | A locally-stacked branch doesn't make GitHub default the base to the parent — set it explicitly with `-B`. `gw status` fills the `-B` in for you while the PR doesn't exist yet. |
+| Parent PR merged, child PR **open** | `gw sync` (on the child) | Restacks the child onto `main`: `git rebase --onto` replays only the child's commits (not the merged parent's), moves the PR base to `main`, force-pushes. Don't hand-rebase. |
+| Parent PR merged **before** the child got a PR | follow `gw status` | It detects the merged base and tells you to `git rebase --onto origin/main <recorded-base>` — replaying only your commits — then open a normal PR. |
+
+Don't worry about cleaning up the parent yourself: **`gw cleanup` refuses to
+delete a branch while an open PR still targets it as base** (deleting it would
+make GitHub close that child PR). It deletes the parent only once the child has
+been `gw sync`'d onto `main`.
 
 `gw new` chooses a base unambiguously: it auto-bases on `origin/main` only from
 home; from a feature branch you must say `--stack` (or `gw home` first). A dirty
 tree is carried on the current HEAD, so creating the branch never hits a merge
 conflict.
+
+> **Why `--onto`, not a plain rebase?** After a squash merge, the parent's
+> commits exist on `main` only as a *new* squashed commit. A plain
+> `git rebase origin/main` would replay the parent's original commits too —
+> doubling them and inviting conflicts. `gw sync` (and the `gw status` hint)
+> use `git rebase --onto origin/main <old-base>` so only the child's own commits
+> move. Let `gw` do it.
 
 ## Situation: work gets interrupted or goes wrong
 
