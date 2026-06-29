@@ -89,7 +89,7 @@ fn test_stack_branches_off_current_branch() {
 
     let out = strip_ansi(&String::from_utf8_lossy(&output.stdout));
     assert!(
-        out.contains("Base branch: feature/parent"),
+        out.contains("from feature/parent"),
         "expected base to be the parent branch: {out}"
     );
     // PR hint must carry the explicit base so GitHub uses the parent.
@@ -124,20 +124,15 @@ fn test_stack_on_home_branch_is_refused() {
 }
 
 #[test]
-fn test_plain_new_branches_off_origin_main() {
+fn test_plain_new_from_home_bases_on_origin_main() {
     let local = setup_repo();
     let dir = local.path();
 
-    // A parent branch with a commit that is NOT on origin/main.
-    assert!(run_gw(dir, &["new", "feature/parent"]).status.success());
-    std::fs::write(dir.join("parent.txt"), "parent work").unwrap();
-    run_git(dir, &["add", "."]);
-    run_git(dir, &["commit", "-m", "feat: parent work"]);
     let origin_main = run_git(dir, &["rev-parse", "origin/main"]);
 
-    // Plain `gw new` (no --stack) from the feature branch must still base on
-    // origin/main, not the current branch.
-    let output = run_gw(dir, &["new", "feature/sibling"]);
+    // Plain `gw new` from the home branch bases on origin/main and emits no
+    // `-B` PR hint.
+    let output = run_gw(dir, &["new", "feature/x"]);
     assert!(
         output.status.success(),
         "gw new failed: {}",
@@ -149,6 +144,61 @@ fn test_plain_new_branches_off_origin_main() {
         !out.contains("-B "),
         "plain new should not emit a -B PR hint: {out}"
     );
-    assert_eq!(current_branch(dir), "feature/sibling");
+    assert_eq!(current_branch(dir), "feature/x");
     assert_eq!(run_git(dir, &["rev-parse", "HEAD"]), origin_main);
+}
+
+#[test]
+fn test_plain_new_on_feature_branch_is_refused() {
+    let local = setup_repo();
+    let dir = local.path();
+
+    // Move onto a feature branch.
+    assert!(run_gw(dir, &["new", "feature/parent"]).status.success());
+
+    // Plain `gw new` (no --stack) from a feature branch must refuse rather than
+    // silently base on origin/main.
+    let output = run_gw(dir, &["new", "feature/sibling"]);
+    assert!(
+        !output.status.success(),
+        "plain gw new on a feature branch should fail"
+    );
+
+    let err = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        err.contains("not the home branch"),
+        "expected refusal pointing at the home branch: {err}"
+    );
+    // Nothing created; still on the feature branch.
+    assert_eq!(current_branch(dir), "feature/parent");
+    assert!(
+        run_gw(dir, &["status"]).status.success(),
+        "feature/sibling should not exist"
+    );
+}
+
+#[test]
+fn test_new_from_home_carries_uncommitted_changes() {
+    let local = setup_repo();
+    let dir = local.path();
+
+    // Dirty the home branch, then start a branch. The work must travel onto the
+    // new branch (still uncommitted), not be stranded on main.
+    std::fs::write(dir.join("wip.txt"), "in progress").unwrap();
+
+    let output = run_gw(dir, &["new", "feature/x"]);
+    assert!(
+        output.status.success(),
+        "gw new with dirty tree failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_eq!(current_branch(dir), "feature/x");
+    // The untracked file is still present and uncommitted on the new branch.
+    assert!(dir.join("wip.txt").exists());
+    let status = run_git(dir, &["status", "--porcelain"]);
+    assert!(
+        status.contains("wip.txt"),
+        "uncommitted change should remain on the new branch: {status}"
+    );
 }

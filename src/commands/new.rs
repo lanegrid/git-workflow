@@ -1,4 +1,17 @@
-//! `gw new` command - Create new branch from origin/main (or the current branch with --stack)
+//! `gw new` command - Create a new branch with a structurally unambiguous base.
+//!
+//! Three invariants make accidental mistakes unrepresentable:
+//!
+//! 1. **No ambiguous base.** A base is auto-chosen only where exactly one makes
+//!    sense: the home branch (→ `origin/main`). From any other branch the base
+//!    is ambiguous (sibling vs stack), so `gw new` refuses and demands `--stack`
+//!    (base on the current branch) or returning home first.
+//! 2. **No implicit merge.** When the working tree is dirty, the start point is
+//!    the current HEAD, so creating the branch never performs a working-tree
+//!    merge and therefore can never conflict or fail cryptically.
+//! 3. **No silent displacement.** Uncommitted work only ever travels onto a
+//!    branch whose base the user explicitly established, and it is always
+//!    reported.
 
 use crate::error::{GwError, Result};
 use crate::git;
@@ -6,23 +19,17 @@ use crate::output;
 use crate::state::{RepoType, WorkingDirState};
 
 /// Execute the `new` command
-///
-/// By default the branch is created from a freshly fetched `origin/main`. With
-/// `stack = true` it is created from the *current* branch's HEAD instead, so the
-/// new branch stacks on top of an in-flight PR. Stacking from the current HEAD
-/// carries any uncommitted changes over without a rebase, so it can't conflict
-/// the way basing on `origin/main` can.
 pub fn run(branch_name: Option<String>, stack: bool, verbose: bool) -> Result<()> {
     // Ensure we're in a git repo
     if !git::is_git_repo() {
         return Err(GwError::NotAGitRepository);
     }
 
-    // --stack reads the current branch as the base; a detached HEAD has no
-    // branch to stack on, so refuse early with an actionable message.
-    if stack && git::is_detached_head() {
+    // A detached HEAD has no branch context, so we can't tell home from a
+    // feature branch nor stack on anything. Refuse rather than guess.
+    if git::is_detached_head() {
         return Err(GwError::Other(
-            "Cannot use --stack from detached HEAD. Checkout a branch first.".to_string(),
+            "Cannot run gw new from detached HEAD. Checkout a branch first.".to_string(),
         ));
     }
 
@@ -46,49 +53,73 @@ pub fn run(branch_name: Option<String>, stack: bool, verbose: bool) -> Result<()
         return Err(GwError::BranchAlreadyExists(branch_name));
     }
 
-    // Resolve the base before mutating anything so we can fail fast (e.g.
-    // --stack on the home branch) without leaving a half-created branch.
-    let base = if stack {
-        let current = git::current_branch()?;
-        let repo_type = RepoType::detect()?;
-        let home_branch = repo_type.home_branch();
+    let current = git::current_branch()?;
+    let repo_type = RepoType::detect()?;
+    let home_branch = repo_type.home_branch();
+    let on_home = current == home_branch;
 
-        // --stack means "stack on top of the feature branch I'm on". On the
-        // home branch that's meaningless -- plain `gw new` already starts fresh
-        // from the default branch -- so refuse rather than create a branch that
-        // tracks `main` under a stacked PR hint.
-        if current == home_branch {
-            output::error(&format!(
-                "--stack requires a non-home branch, but you are on '{}'.",
-                current
-            ));
-            output::hints(&[
-                "gw new feature/your-feature                    # start fresh from the default branch",
-                "git checkout <parent> && gw new feature/child --stack  # stack on a feature branch",
-            ]);
-            return Err(GwError::Other(
-                "--stack requires a non-home current branch".to_string(),
-            ));
-        }
+    // Invariant 1: the base must be unambiguous.
+    if stack && on_home {
+        // --stack means "stack on the feature branch I'm on"; on home that's
+        // meaningless -- plain `gw new` already starts fresh from origin/main.
+        output::error(&format!(
+            "--stack requires a non-home branch, but you are on '{}'.",
+            current
+        ));
+        output::hints(&[
+            "gw new feature/your-feature                            # start fresh from origin/main",
+            "git checkout <parent> && gw new feature/child --stack  # stack on a feature branch",
+        ]);
+        return Err(GwError::Other(
+            "--stack requires a non-home current branch".to_string(),
+        ));
+    }
+    if !stack && !on_home {
+        // Refuse to silently base on origin/main from a feature branch: that
+        // would strip uncommitted work off the branch and pick a base the user
+        // never chose. Force the explicit decision instead.
+        output::error(&format!(
+            "You are on '{}', not the home branch '{}'.",
+            current, home_branch
+        ));
+        output::hints(&[
+            &format!("gw new {branch_name} --stack          # stack on {current}"),
+            &format!("gw home && gw new {branch_name}        # start fresh from {home_branch}"),
+        ]);
+        return Err(GwError::Other(
+            "gw new outside the home branch needs --stack (or run gw home first)".to_string(),
+        ));
+    }
 
-        current
+    let working_dir = WorkingDirState::detect();
+    let dirty = !working_dir.is_clean();
+
+    // Resolve the start point per invariants 1 & 2.
+    //
+    // - --stack: base on the current branch's HEAD (local; no fetch needed).
+    // - home + clean: base on a freshly fetched origin/main.
+    // - home + dirty: base on the current HEAD so carrying the working tree
+    //   needs no merge; if local main lags origin/main, defer the catch-up to a
+    //   clean rebase after committing.
+    let mut behind_count = 0usize;
+    let (start_point, base_label, pr_base): (String, String, Option<String>) = if stack {
+        (current.clone(), current.clone(), Some(current.clone()))
     } else {
-        // Fetch so the default branch base is current. (--stack bases on the
-        // local current branch, so it needs no fetch.)
         output::info("Fetching from origin...");
         git::fetch_prune(verbose)?;
         output::success("Fetched");
+        let default_remote = git::get_default_remote_branch()?;
 
-        git::get_default_remote_branch()?
+        if dirty {
+            behind_count = git::commit_count(&current, &default_remote).unwrap_or(0);
+            (current.clone(), current.clone(), None)
+        } else {
+            (default_remote.clone(), default_remote, None)
+        }
     };
 
-    output::info(&format!("Base branch: {}", output::bold(&base)));
-
-    // Surface that uncommitted work is moving onto the new branch instead of
-    // doing it silently. `git checkout -b` carries the working tree along; for
-    // --stack the start point is the current HEAD so this never conflicts.
-    let working_dir = WorkingDirState::detect();
-    if !working_dir.is_clean() {
+    // Invariant 3: surface that uncommitted work is moving onto the new branch.
+    if dirty {
         output::warn(&format!(
             "Working directory has changes ({}); they will move onto {}",
             working_dir.description(),
@@ -96,13 +127,21 @@ pub fn run(branch_name: Option<String>, stack: bool, verbose: bool) -> Result<()
         ));
     }
 
-    // Create branch from the resolved base
-    git::checkout_new_branch(&branch_name, &base, verbose)?;
+    // Create the branch. The start point is always the current HEAD when dirty,
+    // so this never performs a working-tree merge.
+    git::checkout_new_branch(&branch_name, &start_point, verbose)?;
     output::success(&format!(
         "Created branch {} from {}",
         output::bold(&branch_name),
-        base
+        base_label
     ));
+
+    if behind_count > 0 {
+        output::warn(&format!(
+            "local {} is behind origin/{} ({} commit(s)); rebase after committing",
+            home_branch, home_branch, behind_count
+        ));
+    }
 
     // Show current position
     let commit_short = git::short_commit()?;
@@ -111,19 +150,22 @@ pub fn run(branch_name: Option<String>, stack: bool, verbose: bool) -> Result<()
     output::ready("Ready to work", &branch_name);
     println!("Base: {commit_short} {commit_msg}");
 
-    // Stacked branches need an explicit PR base: a branch cut from the current
-    // branch doesn't make GitHub default the PR base to that parent.
-    let pr_create = if stack {
-        format!("gh pr create -a \"@me\" -B {base} -t \"Title\"")
-    } else {
-        "gh pr create -a \"@me\" -t \"Title\"".to_string()
-    };
-    output::hints(&[
-        "# Make changes, then:",
-        "git add <files> && git commit -m \"feat: description\"",
-        &format!("git push -u origin {branch_name}"),
-        &pr_create,
-    ]);
+    // Build the next-step hints, inserting a rebase step when local main lagged
+    // and a `-B <parent>` PR base for stacked branches.
+    let mut hint_lines: Vec<String> = vec![
+        "# Make changes, then:".to_string(),
+        "git add <files> && git commit -m \"feat: description\"".to_string(),
+    ];
+    if behind_count > 0 {
+        hint_lines.push("git rebase origin/main  # local main was behind; catch up".to_string());
+    }
+    hint_lines.push(format!("git push -u origin {branch_name}"));
+    hint_lines.push(match &pr_base {
+        Some(base) => format!("gh pr create -a \"@me\" -B {base} -t \"Title\""),
+        None => "gh pr create -a \"@me\" -t \"Title\"".to_string(),
+    });
+    let hint_refs: Vec<&str> = hint_lines.iter().map(String::as_str).collect();
+    output::hints(&hint_refs);
 
     Ok(())
 }
