@@ -35,7 +35,7 @@ prints one `Next:` line. Follow it. This is the situation → action → reason 
 
 | When | What | Why |
 |------|------|-----|
-| Starting | `gw new feature/your-feature` | New branch from `origin/main`. If you already edited on home, `gw new` keeps the changes and moves them onto the branch. |
+| Starting | `gw new feature/your-feature` | New branch from `origin/main`. Run it **from home** — if you already edited there, `gw new` carries those changes onto the branch. From a feature branch it refuses (the base is ambiguous): use `--stack` to build on it, or `gw home` first to start fresh. |
 | Code is ready to record | stage intentionally → `git commit -m "feat: ..."` | See **Staging** below — review before committing. |
 | Committed | `git push -u origin feature/your-feature` | Publish for the PR. |
 | Pushed | `gh pr create -a "@me" -t "feat: ..."` | Open the PR; the URL gives you the PR number. |
@@ -62,6 +62,29 @@ git commit -m "feat: ..."
 **Why not `git add -A` / `git commit -a`:** a blanket add sweeps in scratch
 files, unrelated edits, and stray config — things you didn't mean to ship.
 Stage the specific paths for *this* change instead.
+
+## Situation: stacking a PR on top of another
+
+When the next change depends on a branch whose PR is still open, stack on it
+instead of waiting:
+
+```sh
+gw new feature/child --stack          # base on the CURRENT branch, not origin/main
+git commit -m "feat: ..."
+git push -u origin feature/child
+gh pr create -a "@me" -B feature/parent -t "..."   # -B sets the PR base to the parent
+```
+
+| When | What | Why |
+|------|------|-----|
+| Next change builds on an open PR's branch | `gw new <child> --stack` (from the parent branch) | Bases the child on the parent's HEAD, not `origin/main`. |
+| Creating the stacked PR | `gh pr create -B <parent> ...` | A locally-stacked branch doesn't make GitHub default the base to the parent — set it explicitly with `-B`. |
+| Parent PR later merges | `gw sync` | Restacks the child onto `main` (updates base, rebases, force-pushes). The teardown half of stacking. |
+
+`gw new` chooses a base unambiguously: it auto-bases on `origin/main` only from
+home; from a feature branch you must say `--stack` (or `gw home` first). A dirty
+tree is carried on the current HEAD, so creating the branch never hits a merge
+conflict.
 
 ## Situation: work gets interrupted or goes wrong
 

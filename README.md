@@ -49,7 +49,7 @@ Add to your project's `CLAUDE.md`:
 
 Use `git-workflow` commands for git operations:
 
-- `git-workflow new feature/name` - Create branch (auto-fetches from origin)
+- `git-workflow new feature/name` - Create branch from origin/main (auto-fetches); `--stack` bases on the current branch for stacked PRs
 - `git-workflow status` - Check state and see next action
 - `git-workflow pause "message"` - Save WIP and switch context
 - `git-workflow cleanup` - Delete merged branch safely
@@ -83,7 +83,8 @@ git-workflow cleanup
 
 | Command | Description |
 |---------|-------------|
-| `git-workflow new <branch>` | Create branch from `origin/main` (fetches first) |
+| `git-workflow new <branch>` | Create branch from `origin/main` (fetches first); refuses off home unless `--stack` |
+| `git-workflow new <branch> --stack` | Stack a new branch on the current branch (for stacked PRs) |
 | `git-workflow status` | Show state and suggested next action |
 | `git-workflow home` | Return to home branch, sync with origin |
 | `git-workflow sync` | Sync current branch with origin/main |
@@ -147,6 +148,7 @@ If `GW_NOTIFY_CMD` is unset, the notification step is simply skipped.
 - **Protected branches**: Cannot delete `main`, `master`, or home branch
 - **PR verification**: `cleanup` checks GitHub PR status before deletion
 - **Fast-forward only**: `sync`/`home` refuse to create merge commits on diverged branches
+- **Unambiguous base**: `new` auto-bases on `origin/main` only from home; elsewhere it requires `--stack`. A dirty tree is carried on the current HEAD, so creating a branch never hits a merge conflict
 
 ## Git Worktree Support
 
