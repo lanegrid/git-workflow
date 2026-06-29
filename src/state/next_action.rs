@@ -33,29 +33,43 @@ pub enum NextAction {
     PrClosed { pr_number: u64 },
     /// Base PR was merged, should sync (update base to main, rebase, push)
     SyncNeeded { base_branch: String },
+    /// Recorded stacked base merged before this branch's PR was created; rebase
+    /// onto the default branch and open a normal (non-stacked) PR.
+    StackedBaseMerged { base_branch: String },
+}
+
+/// Inputs for [`NextAction::detect`]. Bundled into a struct because the detected
+/// state depends on many independent signals; named fields keep call sites
+/// legible and let new signals be added without churning every caller.
+pub struct DetectContext<'a> {
+    pub current_branch: &'a str,
+    pub home_branch: &'a str,
+    pub working_dir: &'a WorkingDirState,
+    pub sync_state: &'a SyncState,
+    pub pr_info: Option<&'a PrInfo>,
+    pub has_remote: bool,
+    /// This branch's PR's base was merged (post-PR restack trigger).
+    pub base_pr_merged: Option<&'a str>,
+    /// Locally recorded stacked base (`gw new --stack`), filtered to a real
+    /// parent. Drives the `-B <base>` create-PR suggestion before a PR exists.
+    pub recorded_base: Option<&'a str>,
+    /// The recorded base's PR has already merged (stale stacked base): the
+    /// branch should rebase onto the default branch and open a normal PR.
+    pub recorded_base_merged: bool,
 }
 
 impl NextAction {
-    /// Detect the next action based on current state
-    ///
-    /// # Arguments
-    /// * `base_pr_merged` - If Some(branch_name), the base PR for that branch was merged
-    /// * `recorded_base` - If Some(branch_name), the locally recorded stacked base
-    ///   (`gw new --stack`), already filtered to a real parent (not the default
-    ///   branch). Used to suggest `-B <base>` when creating the PR.
-    // The detected state genuinely depends on this many independent inputs;
-    // bundling them into a struct would only move the noise to the call site.
-    #[allow(clippy::too_many_arguments)]
-    pub fn detect(
-        current_branch: &str,
-        home_branch: &str,
-        working_dir: &WorkingDirState,
-        sync_state: &SyncState,
-        pr_info: Option<&PrInfo>,
-        has_remote: bool,
-        base_pr_merged: Option<&str>,
-        recorded_base: Option<&str>,
-    ) -> Self {
+    /// Detect the next action based on current state. See [`DetectContext`].
+    pub fn detect(ctx: &DetectContext) -> Self {
+        let current_branch = ctx.current_branch;
+        let home_branch = ctx.home_branch;
+        let working_dir = ctx.working_dir;
+        let sync_state = ctx.sync_state;
+        let pr_info = ctx.pr_info;
+        let has_remote = ctx.has_remote;
+        let base_pr_merged = ctx.base_pr_merged;
+        let recorded_base = ctx.recorded_base;
+        let recorded_base_merged = ctx.recorded_base_merged;
         // On home branch
         if current_branch == home_branch {
             // Behind upstream → sync first
@@ -109,8 +123,17 @@ impl NextAction {
             return NextAction::PushChanges;
         }
 
-        // Pushed but no PR → create PR (carry the stacked base if recorded)
+        // Pushed but no PR → create PR. If the recorded stacked base already
+        // merged, the `-B <base>` it would suggest is stale: rebase onto the
+        // default branch and open a normal PR instead.
         if pr_info.is_none() && has_remote {
+            if recorded_base_merged {
+                if let Some(base) = recorded_base {
+                    return NextAction::StackedBaseMerged {
+                        base_branch: base.to_string(),
+                    };
+                }
+            }
             return NextAction::CreatePr {
                 base: recorded_base.map(String::from),
             };
@@ -221,6 +244,16 @@ impl NextAction {
                 println!();
                 println!("  gw sync");
             }
+            NextAction::StackedBaseMerged { base_branch } => {
+                output::action(&format!(
+                    "Next: base '{}' merged — rebase onto main",
+                    base_branch
+                ));
+                println!();
+                println!("  git fetch --prune && git rebase origin/main");
+                println!("  # then open a normal PR (base is now main):");
+                println!("  gh pr create -a \"@me\" -t \"...\"");
+            }
         }
 
         output::separator();
@@ -240,6 +273,7 @@ impl NextAction {
             NextAction::ResolveDivergence => "resolve divergence",
             NextAction::PrClosed { .. } => "PR closed",
             NextAction::SyncNeeded { .. } => "sync needed",
+            NextAction::StackedBaseMerged { .. } => "rebase (base merged)",
         }
     }
 }
@@ -249,108 +283,133 @@ mod tests {
     use super::*;
     use crate::github::{PrInfo, PrState};
 
+    /// Build a `DetectContext` with the common fields and safe defaults for the
+    /// stacked-base signals; tests override the latter via struct update syntax.
+    fn ctx<'a>(
+        current: &'a str,
+        home: &'a str,
+        working_dir: &'a WorkingDirState,
+        sync_state: &'a SyncState,
+        pr_info: Option<&'a PrInfo>,
+        has_remote: bool,
+    ) -> DetectContext<'a> {
+        DetectContext {
+            current_branch: current,
+            home_branch: home,
+            working_dir,
+            sync_state,
+            pr_info,
+            has_remote,
+            base_pr_merged: None,
+            recorded_base: None,
+            recorded_base_merged: false,
+        }
+    }
+
+    fn merged_pr(base: &str) -> PrInfo {
+        PrInfo::new(
+            42,
+            "Test PR",
+            "https://...",
+            PrState::Merged {
+                method: crate::github::MergeMethod::Squash,
+                merge_commit: None,
+            },
+            base,
+        )
+    }
+
     #[test]
     fn test_on_home_branch_suggests_start_new_work() {
-        let action = NextAction::detect(
+        let action = NextAction::detect(&ctx(
             "main",
             "main",
             &WorkingDirState::Clean,
             &SyncState::Synced,
             None,
             false,
-            None,
-            None,
-        );
+        ));
         assert_eq!(action, NextAction::StartNewWork);
     }
 
     #[test]
     fn test_on_home_branch_behind_suggests_sync() {
-        let action = NextAction::detect(
+        let action = NextAction::detect(&ctx(
             "main",
             "main",
             &WorkingDirState::Clean,
             &SyncState::Behind { count: 5 },
             None,
             false,
-            None,
-            None,
-        );
+        ));
         assert_eq!(action, NextAction::SyncHomeWithUpstream { behind_count: 5 });
     }
 
     #[test]
     fn test_uncommitted_changes_suggests_commit() {
-        let action = NextAction::detect(
+        let action = NextAction::detect(&ctx(
             "feature/test",
             "main",
             &WorkingDirState::HasUnstagedChanges,
             &SyncState::Synced,
             None,
             true,
-            None,
-            None,
-        );
+        ));
         assert_eq!(action, NextAction::CommitChanges);
     }
 
     #[test]
     fn test_unpushed_commits_suggests_push() {
-        let action = NextAction::detect(
+        let action = NextAction::detect(&ctx(
             "feature/test",
             "main",
             &WorkingDirState::Clean,
             &SyncState::HasUnpushedCommits { count: 2 },
             None,
             true,
-            None,
-            None,
-        );
+        ));
         assert_eq!(action, NextAction::PushChanges);
     }
 
     #[test]
     fn test_no_upstream_suggests_push() {
-        let action = NextAction::detect(
+        let action = NextAction::detect(&ctx(
             "feature/test",
             "main",
             &WorkingDirState::Clean,
             &SyncState::NoUpstream,
             None,
             false,
-            None,
-            None,
-        );
+        ));
         assert_eq!(action, NextAction::PushChanges);
     }
 
     #[test]
     fn test_pushed_no_pr_suggests_create_pr() {
-        let action = NextAction::detect(
+        let action = NextAction::detect(&ctx(
             "feature/test",
             "main",
             &WorkingDirState::Clean,
             &SyncState::Synced,
             None,
             true,
-            None,
-            None,
-        );
+        ));
         assert_eq!(action, NextAction::CreatePr { base: None });
     }
 
     #[test]
     fn test_pushed_no_pr_with_recorded_base_suggests_stacked_pr() {
-        let action = NextAction::detect(
-            "feature/child",
-            "main",
-            &WorkingDirState::Clean,
-            &SyncState::Synced,
-            None,
-            true,
-            None,
-            Some("feature/parent"),
-        );
+        let action = NextAction::detect(&DetectContext {
+            recorded_base: Some("feature/parent"),
+            ..ctx(
+                "feature/child",
+                "main",
+                &WorkingDirState::Clean,
+                &SyncState::Synced,
+                None,
+                true,
+            )
+        });
         assert_eq!(
             action,
             NextAction::CreatePr {
@@ -360,80 +419,85 @@ mod tests {
     }
 
     #[test]
+    fn test_recorded_base_merged_before_pr_suggests_rebase() {
+        let action = NextAction::detect(&DetectContext {
+            recorded_base: Some("feature/parent"),
+            recorded_base_merged: true,
+            ..ctx(
+                "feature/child",
+                "main",
+                &WorkingDirState::Clean,
+                &SyncState::Synced,
+                None,
+                true,
+            )
+        });
+        assert_eq!(
+            action,
+            NextAction::StackedBaseMerged {
+                base_branch: "feature/parent".to_string()
+            }
+        );
+    }
+
+    #[test]
     fn test_open_pr_suggests_waiting() {
         let pr = PrInfo::new(42, "Test PR", "https://...", PrState::Open, "main");
-        let action = NextAction::detect(
+        let action = NextAction::detect(&ctx(
             "feature/test",
             "main",
             &WorkingDirState::Clean,
             &SyncState::Synced,
             Some(&pr),
             true,
-            None,
-            None,
-        );
+        ));
         assert_eq!(action, NextAction::WaitingForReview { pr_number: 42 });
     }
 
     #[test]
     fn test_merged_pr_suggests_cleanup() {
-        let pr = PrInfo::new(
-            42,
-            "Test PR",
-            "https://...",
-            PrState::Merged {
-                method: crate::github::MergeMethod::Squash,
-                merge_commit: None,
-            },
-            "main",
-        );
-        let action = NextAction::detect(
+        let pr = merged_pr("main");
+        let action = NextAction::detect(&ctx(
             "feature/test",
             "main",
             &WorkingDirState::Clean,
             &SyncState::Synced,
             Some(&pr),
             true,
-            None,
-            None,
-        );
+        ));
         assert_eq!(action, NextAction::Cleanup);
     }
 
     #[test]
     fn test_closed_pr_suggests_reopen_or_cleanup() {
         let pr = PrInfo::new(42, "Test PR", "https://...", PrState::Closed, "main");
-        let action = NextAction::detect(
+        let action = NextAction::detect(&ctx(
             "feature/test",
             "main",
             &WorkingDirState::Clean,
             &SyncState::Synced,
             Some(&pr),
             true,
-            None,
-            None,
-        );
+        ));
         assert_eq!(action, NextAction::PrClosed { pr_number: 42 });
     }
 
     #[test]
     fn test_behind_suggests_rebase() {
-        let action = NextAction::detect(
+        let action = NextAction::detect(&ctx(
             "feature/test",
             "main",
             &WorkingDirState::Clean,
             &SyncState::Behind { count: 3 },
             None,
             true,
-            None,
-            None,
-        );
+        ));
         assert_eq!(action, NextAction::RebaseNeeded);
     }
 
     #[test]
     fn test_diverged_suggests_resolve() {
-        let action = NextAction::detect(
+        let action = NextAction::detect(&ctx(
             "feature/test",
             "main",
             &WorkingDirState::Clean,
@@ -443,50 +507,35 @@ mod tests {
             },
             None,
             true,
-            None,
-            None,
-        );
+        ));
         assert_eq!(action, NextAction::ResolveDivergence);
     }
 
     #[test]
     fn test_uncommitted_changes_takes_priority_over_pr_open() {
         let pr = PrInfo::new(42, "Test PR", "https://...", PrState::Open, "main");
-        let action = NextAction::detect(
+        let action = NextAction::detect(&ctx(
             "feature/test",
             "main",
             &WorkingDirState::HasStagedChanges,
             &SyncState::Synced,
             Some(&pr),
             true,
-            None,
-            None,
-        );
+        ));
         assert_eq!(action, NextAction::CommitChanges);
     }
 
     #[test]
     fn test_merged_pr_takes_priority_over_uncommitted_changes() {
-        let pr = PrInfo::new(
-            42,
-            "Test PR",
-            "https://...",
-            PrState::Merged {
-                method: crate::github::MergeMethod::Squash,
-                merge_commit: None,
-            },
-            "main",
-        );
-        let action = NextAction::detect(
+        let pr = merged_pr("main");
+        let action = NextAction::detect(&ctx(
             "feature/test",
             "main",
             &WorkingDirState::HasUnstagedChanges,
             &SyncState::Synced,
             Some(&pr),
             true,
-            None,
-            None,
-        );
+        ));
         // Merged PR takes priority - cleanup first
         assert_eq!(action, NextAction::Cleanup);
     }
@@ -494,16 +543,17 @@ mod tests {
     #[test]
     fn test_base_pr_merged_suggests_sync() {
         let pr = PrInfo::new(42, "Test PR", "https://...", PrState::Open, "feature/base");
-        let action = NextAction::detect(
-            "feature/child",
-            "main",
-            &WorkingDirState::Clean,
-            &SyncState::Synced,
-            Some(&pr),
-            true,
-            Some("feature/base"),
-            None,
-        );
+        let action = NextAction::detect(&DetectContext {
+            base_pr_merged: Some("feature/base"),
+            ..ctx(
+                "feature/child",
+                "main",
+                &WorkingDirState::Clean,
+                &SyncState::Synced,
+                Some(&pr),
+                true,
+            )
+        });
         assert_eq!(
             action,
             NextAction::SyncNeeded {
@@ -515,16 +565,17 @@ mod tests {
     #[test]
     fn test_base_pr_merged_takes_priority_over_waiting() {
         let pr = PrInfo::new(42, "Test PR", "https://...", PrState::Open, "feature/base");
-        let action = NextAction::detect(
-            "feature/child",
-            "main",
-            &WorkingDirState::Clean,
-            &SyncState::Synced,
-            Some(&pr),
-            true,
-            Some("feature/base"),
-            None,
-        );
+        let action = NextAction::detect(&DetectContext {
+            base_pr_merged: Some("feature/base"),
+            ..ctx(
+                "feature/child",
+                "main",
+                &WorkingDirState::Clean,
+                &SyncState::Synced,
+                Some(&pr),
+                true,
+            )
+        });
         // SyncNeeded should take priority over WaitingForReview
         assert_eq!(
             action,
