@@ -61,7 +61,19 @@ pub fn parse_pr_json(json: &str) -> Result<RawPrData> {
     let parsed: GhPrJson = serde_json::from_str(json)
         .map_err(|e| GwError::Other(format!("Failed to parse PR JSON: {e}. Raw: {json}")))?;
 
-    Ok(RawPrData {
+    Ok(raw_from(parsed))
+}
+
+/// Parse a JSON array from `gh pr list --json ...` into raw PR records.
+pub fn parse_pr_list_json(json: &str) -> Result<Vec<RawPrData>> {
+    let parsed: Vec<GhPrJson> = serde_json::from_str(json)
+        .map_err(|e| GwError::Other(format!("Failed to parse PR list JSON: {e}. Raw: {json}")))?;
+
+    Ok(parsed.into_iter().map(raw_from).collect())
+}
+
+fn raw_from(parsed: GhPrJson) -> RawPrData {
+    RawPrData {
         number: parsed.number,
         title: parsed.title,
         url: parsed.url,
@@ -69,7 +81,7 @@ pub fn parse_pr_json(json: &str) -> Result<RawPrData> {
         base_branch: parsed.base_ref_name,
         head_branch: parsed.head_ref_name,
         merge_commit: parsed.merge_commit.and_then(|m| m.oid),
-    })
+    }
 }
 
 #[cfg(test)]
@@ -167,5 +179,23 @@ mod tests {
         let pr = parse_pr_json(json).unwrap();
         assert_eq!(pr.number, 49);
         assert_eq!(pr.title, "t");
+    }
+
+    #[test]
+    fn test_parse_pr_list_json() {
+        let json = r#"[
+            {"number":10,"title":"child one","state":"OPEN","baseRefName":"feature/base","headRefName":"feature/child-1"},
+            {"number":11,"title":"child two","state":"OPEN","baseRefName":"feature/base","headRefName":"feature/child-2"}
+        ]"#;
+        let prs = parse_pr_list_json(json).unwrap();
+        assert_eq!(prs.len(), 2);
+        assert_eq!(prs[0].number, 10);
+        assert_eq!(prs[0].head_branch, "feature/child-1");
+        assert_eq!(prs[1].base_branch, "feature/base");
+    }
+
+    #[test]
+    fn test_parse_pr_list_json_empty() {
+        assert!(parse_pr_list_json("[]").unwrap().is_empty());
     }
 }

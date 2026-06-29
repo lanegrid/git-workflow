@@ -38,7 +38,8 @@ pub use types::{MergeMethod, PrInfo, PrState, RawPrData};
 // Re-export client
 pub use client::{
     CommandExecutor, CommandOutput, GitHubClient, RealCommandExecutor, add_pr_comment,
-    delete_remote_branch, get_pr_for_branch, is_gh_authenticated, is_gh_available, update_pr_base,
+    delete_remote_branch, get_pr_for_branch, is_gh_authenticated, is_gh_available,
+    open_prs_with_base, update_pr_base,
 };
 
 // Re-export mock (for testing in other modules)

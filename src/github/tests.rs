@@ -6,9 +6,61 @@
 //! - Error handling (auth errors, network errors)
 //! - Edge cases (Japanese titles, special characters)
 
-use super::client::GitHubClient;
+use super::client::{CommandOutput, GitHubClient};
 use super::mock::{MockScenarioBuilder, fixtures};
 use super::types::{MergeMethod, PrState};
+
+/// Args for the `gh pr list --base <base> --state open` query, matching
+/// `GitHubClient::open_prs_with_base`.
+fn pr_list_args(base: &str) -> Vec<String> {
+    [
+        "pr",
+        "list",
+        "--base",
+        base,
+        "--state",
+        "open",
+        "--json",
+        "number,title,url,state,baseRefName,headRefName,mergeCommit",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+#[test]
+fn test_open_prs_with_base_lists_children() {
+    let executor = MockScenarioBuilder::new().gh_available().build();
+    let args = pr_list_args("feature/base");
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let json = r#"[
+        {"number":10,"title":"child one","state":"OPEN","baseRefName":"feature/base","headRefName":"feature/child-1"},
+        {"number":11,"title":"child two","state":"OPEN","baseRefName":"feature/base","headRefName":"feature/child-2"}
+    ]"#;
+    executor.on_command("gh", &arg_refs, CommandOutput::success(json));
+    let client = GitHubClient::with_executor(executor);
+
+    let prs = client.open_prs_with_base("feature/base").unwrap();
+    assert_eq!(prs.len(), 2);
+    assert_eq!(prs[0].number, 10);
+    assert_eq!(prs[0].head_branch, "feature/child-1");
+}
+
+#[test]
+fn test_open_prs_with_base_empty() {
+    let executor = MockScenarioBuilder::new().gh_available().build();
+    let args = pr_list_args("feature/base");
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    executor.on_command("gh", &arg_refs, CommandOutput::success("[]"));
+    let client = GitHubClient::with_executor(executor);
+
+    assert!(
+        client
+            .open_prs_with_base("feature/base")
+            .unwrap()
+            .is_empty()
+    );
+}
 
 // =============================================================================
 // gh CLI availability tests
