@@ -5,7 +5,7 @@ pub mod repo;
 pub mod sync;
 pub mod working_dir;
 
-pub use next_action::NextAction;
+pub use next_action::{DetectContext, NextAction};
 pub use repo::RepoType;
 pub use sync::SyncState;
 pub use working_dir::WorkingDirState;

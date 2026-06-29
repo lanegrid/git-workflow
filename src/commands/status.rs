@@ -4,7 +4,7 @@ use crate::error::{GwError, Result};
 use crate::git;
 use crate::github::{self, PrInfo, PrState};
 use crate::output;
-use crate::state::{NextAction, RepoType, SyncState, WorkingDirState};
+use crate::state::{DetectContext, NextAction, RepoType, SyncState, WorkingDirState};
 
 /// Execute the `status` command
 pub fn run() -> Result<()> {
@@ -106,9 +106,15 @@ pub fn run() -> Result<()> {
     } else {
         None
     };
+    // If the recorded parent already merged before this branch got a PR, the
+    // stacked base is stale — the branch should rebase onto main rather than
+    // open a `-B <parent>` PR. (Only checked pre-PR; once a PR exists, GitHub's
+    // base is authoritative.)
+    let mut recorded_base_merged = false;
     if pr_info.is_none() {
         if let Some(base) = &recorded_base {
             output::info(&format!("Base: {} (stacked, PR not created yet)", base));
+            recorded_base_merged = check_base_pr_merged(base).is_some();
         }
     }
 
@@ -119,16 +125,17 @@ pub fn run() -> Result<()> {
     }
 
     // Next action
-    let next_action = NextAction::detect(
-        &current,
+    let next_action = NextAction::detect(&DetectContext {
+        current_branch: &current,
         home_branch,
-        &working_dir,
-        &sync_state,
-        pr_info.as_ref(),
+        working_dir: &working_dir,
+        sync_state: &sync_state,
+        pr_info: pr_info.as_ref(),
         has_remote,
-        base_pr_merged.as_deref(),
-        recorded_base.as_deref(),
-    );
+        base_pr_merged: base_pr_merged.as_deref(),
+        recorded_base: recorded_base.as_deref(),
+        recorded_base_merged,
+    });
     next_action.display(&current);
 
     Ok(())
