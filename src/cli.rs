@@ -4,7 +4,28 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "gw")]
-#[command(about = "Git workflow CLI - type-safe worktree-aware git operations")]
+#[command(about = "Worktree-aware git workflow: branch -> PR -> cleanup, safely.")]
+#[command(long_about = "\
+Worktree-aware git workflow: branch -> PR -> cleanup, safely.
+
+For developers using a PR-per-branch workflow. gw drives each change from a
+fresh branch through review to a cleaned-up merge, and keeps parallel worktrees
+in sync so day-to-day work never touches `main` directly.
+
+\"home branch\": the branch a worktree returns to (the main worktree's home is
+`main`). `gw home` switches to it and syncs with origin/main.
+
+TYPICAL FLOW:
+  gw new feature/login    # branch off a fresh origin/main
+  # ...edit, then: git commit  ->  git push -u origin <branch>  ->  gh pr create
+  gw await <pr> --open    # wait for CI, open the PR, watch to merge, then clean up
+
+COMMANDS BY SITUATION:
+  Everyday:   new, status, open, sync, cleanup, home
+  Recovery:   pause, abandon, undo
+  Worktrees:  worktree pool   (give parallel agents isolated worktrees)
+
+Lost? Run `gw status` -- it prints the single next command for where you are.")]
 #[command(version)]
 pub struct Cli {
     #[command(subcommand)]

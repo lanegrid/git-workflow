@@ -58,3 +58,12 @@ pub fn hints(lines: &[&str]) {
         println!("  {line}");
     }
 }
+
+/// Print a `Try:` footer (to stderr) listing runnable next commands after an error.
+pub fn error_footer(lines: &[&str]) {
+    eprintln!();
+    eprintln!("{BOLD}Try:{RESET}");
+    for line in lines {
+        eprintln!("  {line}");
+    }
+}
