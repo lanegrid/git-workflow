@@ -136,6 +136,21 @@ gw worktree pool drain                   # remove all pool worktrees
 
 > **Always release, even on error** — a forgotten release drains the pool.
 
+**gw owns worktrees in this repo — don't open a second path.** Claude Code's
+agent worktree isolation (`isolation: "worktree"`) creates worktrees `gw` can't
+see, and it leaves them behind once an agent commits. That collides with `gw`'s
+worktree-aware `cleanup` (which then can't delete a branch a stray worktree still
+holds). So for isolated/parallel agent work, **use the pool above — never the
+agent's own `isolation: worktree`.**
+
+**A branch's lifecycle stays in one worktree.** Whatever worktree a branch is
+born in is where it's pushed, watched, and torn down. Concretely:
+
+- **Don't run `gw await`/`gw cleanup` from a different worktree than the branch
+  lives in** — `cleanup` can't delete a branch another worktree has checked out.
+- **Release (or remove) the worktree before cleanup deletes the branch** — `gw
+  worktree pool release` resets it off the branch, freeing it for deletion.
+
 ## Worktree model & hard "don'ts"
 
 Each worktree has a **home branch**; the main worktree's home is `main`. `gw`
@@ -147,6 +162,9 @@ handles worktree boundaries for you. Because of them:
   safely; a stash doesn't).
 - **Don't hand-rebase stacked PRs** — use `gw sync`.
 - **Don't push to `main`** — every change goes through a PR.
+- **Don't create worktrees outside `gw`** — no `git worktree add`, no agent
+  `isolation: worktree`. `gw` is the single worktree authority here; a second
+  path produces worktrees `gw cleanup` can't reconcile (see the pool section).
 
 ## Commit conventions
 
