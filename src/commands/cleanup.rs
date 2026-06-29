@@ -301,6 +301,41 @@ fn delete_local_branch(
     }
 }
 
+/// Whether deleting `branch`'s remote would orphan open child PRs.
+///
+/// GitHub closes a PR when its base branch is deleted, so if any open PR still
+/// targets `branch` as its base we must NOT delete it — warn and return true to
+/// skip the deletion. On a query error we conservatively skip too, rather than
+/// risk silently closing a child PR.
+fn remote_deletion_blocked_by_children(branch: &str) -> bool {
+    match github::open_prs_with_base(branch) {
+        Ok(children) if !children.is_empty() => {
+            output::warn(&format!(
+                "Not deleting origin/{branch}: {} open PR(s) still target it as base:",
+                children.len()
+            ));
+            for child in &children {
+                output::warn(&format!("  #{} ({})", child.number, child.head_branch));
+            }
+            output::action(
+                "gw sync   # run on each child to restack onto main, then re-run gw cleanup",
+            );
+            true
+        }
+        Ok(_) => false,
+        Err(e) => {
+            output::warn(&format!("Could not check for dependent PRs: {e}"));
+            output::warn(&format!(
+                "Not deleting origin/{branch} to avoid closing a child PR."
+            ));
+            output::action(&format!(
+                "git push origin --delete {branch}  # if you're sure nothing depends on it"
+            ));
+            true
+        }
+    }
+}
+
 /// Handle remote branch deletion
 fn handle_remote_branch(branch: &str, pr_info: &Option<github::PrInfo>, verbose: bool) {
     let remote_exists = match git::remote_branch_exists(branch) {
@@ -330,6 +365,12 @@ fn handle_remote_branch(branch: &str, pr_info: &Option<github::PrInfo>, verbose:
     // Remote branch still exists
     match pr_info {
         Some(pr) if matches!(pr.state, PrState::Merged { .. }) => {
+            // Don't delete a branch that open PRs still use as their base —
+            // GitHub would close those child PRs. Skip the remote deletion
+            // (local cleanup already happened) and let the user restack first.
+            if remote_deletion_blocked_by_children(branch) {
+                return;
+            }
             // PR merged but remote branch exists - delete it
             output::info("PR merged, deleting remote branch...");
             match github::delete_remote_branch(branch) {

@@ -7,7 +7,7 @@ use std::process::Command;
 
 use crate::error::{GwError, Result};
 
-use super::parser::parse_pr_json;
+use super::parser::{parse_pr_json, parse_pr_list_json};
 use super::types::{MergeMethod, PrInfo, PrState, RawPrData};
 
 /// Output from a command execution
@@ -144,6 +144,38 @@ impl<E: CommandExecutor> GitHubClient<E> {
         let raw = parse_pr_json(&output.stdout)?;
         let pr_info = self.convert_raw_to_pr_info(raw)?;
         Ok(Some(pr_info))
+    }
+
+    /// List the open PRs that target `base` as their base branch.
+    ///
+    /// Used before deleting a branch so we don't delete the base of an open
+    /// stacked PR (which GitHub would close). Returns an empty vec when none.
+    pub fn open_prs_with_base(&self, base: &str) -> Result<Vec<PrInfo>> {
+        let output = self.executor.execute(
+            "gh",
+            &[
+                "pr",
+                "list",
+                "--base",
+                base,
+                "--state",
+                "open",
+                "--json",
+                "number,title,url,state,baseRefName,headRefName,mergeCommit",
+            ],
+        )?;
+
+        if !output.success {
+            return Err(GwError::GitCommandFailed(format!(
+                "gh pr list failed: {}",
+                output.stderr.trim()
+            )));
+        }
+
+        parse_pr_list_json(&output.stdout)?
+            .into_iter()
+            .map(|raw| self.convert_raw_to_pr_info(raw))
+            .collect()
     }
 
     /// Delete a remote branch
@@ -294,6 +326,11 @@ pub fn get_pr_for_branch(branch: &str) -> Result<Option<PrInfo>> {
 /// Delete a remote branch
 pub fn delete_remote_branch(branch: &str) -> Result<()> {
     GitHubClient::new().delete_remote_branch(branch)
+}
+
+/// List the open PRs that target `base` as their base branch.
+pub fn open_prs_with_base(base: &str) -> Result<Vec<PrInfo>> {
+    GitHubClient::new().open_prs_with_base(base)
 }
 
 /// Add a comment to a PR
