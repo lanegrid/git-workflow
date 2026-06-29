@@ -136,6 +136,14 @@ pub fn run(branch_name: Option<String>, stack: bool, verbose: bool) -> Result<()
         base_label
     ));
 
+    // Record the stacked base locally so `gw status` can suggest the right PR
+    // base (`-B <parent>`) before the PR exists. (A stale entry -- e.g. parent
+    // merged before this branch's PR is opened -- is left for the parent/child
+    // guard work to handle; `gh pr create` errors loudly on a missing base.)
+    if let Some(base) = &pr_base {
+        git::set_branch_base(&branch_name, base, verbose)?;
+    }
+
     if behind_count > 0 {
         output::warn(&format!(
             "local {} is behind origin/{} ({} commit(s)); rebase after committing",

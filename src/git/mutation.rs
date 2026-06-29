@@ -149,6 +149,42 @@ pub fn force_push_with_lease(branch: &str, verbose: bool) -> Result<()> {
     git_run(&["push", "--force-with-lease", "origin", branch], verbose)
 }
 
+/// Record the base branch a branch is stacked on (`branch.<name>.gwBase`).
+///
+/// Lets the workflow know a branch is stacked before its PR exists, so
+/// `gw status` can suggest `gh pr create -B <base>`. Git drops the whole
+/// `[branch "<name>"]` section when the branch is deleted, so this needs no
+/// explicit cleanup on `gw cleanup`.
+pub fn set_branch_base(branch: &str, base: &str, verbose: bool) -> Result<()> {
+    git_run(
+        &["config", &format!("branch.{branch}.gwBase"), base],
+        verbose,
+    )
+}
+
+/// Clear a branch's recorded base (`branch.<name>.gwBase`).
+///
+/// A no-op (not an error) when the key is absent, so callers can clear
+/// unconditionally — e.g. `gw sync` after restacking a branch onto the default
+/// branch, where it is no longer stacked.
+pub fn unset_branch_base(branch: &str, verbose: bool) -> Result<()> {
+    if verbose {
+        output::action(&format!("git config --unset branch.{branch}.gwBase"));
+    }
+    let output = Command::new("git")
+        .args(["config", "--unset", &format!("branch.{branch}.gwBase")])
+        .output()
+        .map_err(|e| GwError::GitCommandFailed(format!("Failed to execute git: {e}")))?;
+    // Exit code 5 = "key was not present"; treat as already-clear.
+    match output.status.code() {
+        Some(0) | Some(5) => Ok(()),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            Err(GwError::GitCommandFailed(stderr))
+        }
+    }
+}
+
 /// Add a new worktree at the given path with a new branch from a start point
 pub fn worktree_add(path: &str, branch: &str, start_point: &str, verbose: bool) -> Result<()> {
     git_run(

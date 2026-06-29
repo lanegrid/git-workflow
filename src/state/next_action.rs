@@ -18,8 +18,9 @@ pub enum NextAction {
     CommitChanges,
     /// Has unpushed commits, should push
     PushChanges,
-    /// Pushed but no PR, should create PR
-    CreatePr,
+    /// Pushed but no PR, should create PR. `base` is the stacked parent branch
+    /// to pass as `-B`, or `None` when the PR targets the default branch.
+    CreatePr { base: Option<String> },
     /// PR is open, waiting for review/CI
     WaitingForReview { pr_number: u64 },
     /// PR is merged, should cleanup
@@ -39,6 +40,12 @@ impl NextAction {
     ///
     /// # Arguments
     /// * `base_pr_merged` - If Some(branch_name), the base PR for that branch was merged
+    /// * `recorded_base` - If Some(branch_name), the locally recorded stacked base
+    ///   (`gw new --stack`), already filtered to a real parent (not the default
+    ///   branch). Used to suggest `-B <base>` when creating the PR.
+    // The detected state genuinely depends on this many independent inputs;
+    // bundling them into a struct would only move the noise to the call site.
+    #[allow(clippy::too_many_arguments)]
     pub fn detect(
         current_branch: &str,
         home_branch: &str,
@@ -47,6 +54,7 @@ impl NextAction {
         pr_info: Option<&PrInfo>,
         has_remote: bool,
         base_pr_merged: Option<&str>,
+        recorded_base: Option<&str>,
     ) -> Self {
         // On home branch
         if current_branch == home_branch {
@@ -101,9 +109,11 @@ impl NextAction {
             return NextAction::PushChanges;
         }
 
-        // Pushed but no PR → create PR
+        // Pushed but no PR → create PR (carry the stacked base if recorded)
         if pr_info.is_none() && has_remote {
-            return NextAction::CreatePr;
+            return NextAction::CreatePr {
+                base: recorded_base.map(String::from),
+            };
         }
 
         // PR is open → waiting
@@ -150,10 +160,18 @@ impl NextAction {
                 println!();
                 println!("  git push -u origin {}", branch);
             }
-            NextAction::CreatePr => {
+            NextAction::CreatePr { base } => {
                 output::action("Next: create pull request");
                 println!();
-                println!("  gh pr create -a \"@me\" -t \"...\"");
+                match base {
+                    Some(base) => {
+                        println!(
+                            "  gh pr create -a \"@me\" -B {} -t \"...\"  # stacked on {}",
+                            base, base
+                        )
+                    }
+                    None => println!("  gh pr create -a \"@me\" -t \"...\""),
+                }
             }
             NextAction::WaitingForReview { pr_number } => {
                 if *pr_number > 0 {
@@ -215,7 +233,7 @@ impl NextAction {
             NextAction::SyncHomeWithUpstream { .. } => "sync with upstream",
             NextAction::CommitChanges => "commit changes",
             NextAction::PushChanges => "push to remote",
-            NextAction::CreatePr => "create PR",
+            NextAction::CreatePr { .. } => "create PR",
             NextAction::WaitingForReview { .. } => "waiting for review",
             NextAction::Cleanup => "cleanup branch",
             NextAction::RebaseNeeded => "rebase needed",
@@ -241,6 +259,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         );
         assert_eq!(action, NextAction::StartNewWork);
     }
@@ -254,6 +273,7 @@ mod tests {
             &SyncState::Behind { count: 5 },
             None,
             false,
+            None,
             None,
         );
         assert_eq!(action, NextAction::SyncHomeWithUpstream { behind_count: 5 });
@@ -269,6 +289,7 @@ mod tests {
             None,
             true,
             None,
+            None,
         );
         assert_eq!(action, NextAction::CommitChanges);
     }
@@ -282,6 +303,7 @@ mod tests {
             &SyncState::HasUnpushedCommits { count: 2 },
             None,
             true,
+            None,
             None,
         );
         assert_eq!(action, NextAction::PushChanges);
@@ -297,6 +319,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         );
         assert_eq!(action, NextAction::PushChanges);
     }
@@ -311,8 +334,29 @@ mod tests {
             None,
             true,
             None,
+            None,
         );
-        assert_eq!(action, NextAction::CreatePr);
+        assert_eq!(action, NextAction::CreatePr { base: None });
+    }
+
+    #[test]
+    fn test_pushed_no_pr_with_recorded_base_suggests_stacked_pr() {
+        let action = NextAction::detect(
+            "feature/child",
+            "main",
+            &WorkingDirState::Clean,
+            &SyncState::Synced,
+            None,
+            true,
+            None,
+            Some("feature/parent"),
+        );
+        assert_eq!(
+            action,
+            NextAction::CreatePr {
+                base: Some("feature/parent".to_string())
+            }
+        );
     }
 
     #[test]
@@ -325,6 +369,7 @@ mod tests {
             &SyncState::Synced,
             Some(&pr),
             true,
+            None,
             None,
         );
         assert_eq!(action, NextAction::WaitingForReview { pr_number: 42 });
@@ -350,6 +395,7 @@ mod tests {
             Some(&pr),
             true,
             None,
+            None,
         );
         assert_eq!(action, NextAction::Cleanup);
     }
@@ -365,6 +411,7 @@ mod tests {
             Some(&pr),
             true,
             None,
+            None,
         );
         assert_eq!(action, NextAction::PrClosed { pr_number: 42 });
     }
@@ -378,6 +425,7 @@ mod tests {
             &SyncState::Behind { count: 3 },
             None,
             true,
+            None,
             None,
         );
         assert_eq!(action, NextAction::RebaseNeeded);
@@ -396,6 +444,7 @@ mod tests {
             None,
             true,
             None,
+            None,
         );
         assert_eq!(action, NextAction::ResolveDivergence);
     }
@@ -410,6 +459,7 @@ mod tests {
             &SyncState::Synced,
             Some(&pr),
             true,
+            None,
             None,
         );
         assert_eq!(action, NextAction::CommitChanges);
@@ -435,6 +485,7 @@ mod tests {
             Some(&pr),
             true,
             None,
+            None,
         );
         // Merged PR takes priority - cleanup first
         assert_eq!(action, NextAction::Cleanup);
@@ -451,6 +502,7 @@ mod tests {
             Some(&pr),
             true,
             Some("feature/base"),
+            None,
         );
         assert_eq!(
             action,
@@ -471,6 +523,7 @@ mod tests {
             Some(&pr),
             true,
             Some("feature/base"),
+            None,
         );
         // SyncNeeded should take priority over WaitingForReview
         assert_eq!(
