@@ -144,6 +144,17 @@ pub fn rebase(target: &str, verbose: bool) -> Result<()> {
     git_run(&["rebase", target], verbose)
 }
 
+/// Rebase the current branch onto `new_base`, replaying only the commits after
+/// `old_base` (`git rebase --onto <new_base> <old_base>`).
+///
+/// Required for stacked PRs after the base PR merged: a plain
+/// `git rebase <new_base>` would replay the base's commits too — doubled and
+/// conflict-prone, especially after a squash merge. `--onto` replays only
+/// `old_base..HEAD`, i.e. this branch's own commits.
+pub fn rebase_onto(new_base: &str, old_base: &str, verbose: bool) -> Result<()> {
+    git_run(&["rebase", "--onto", new_base, old_base], verbose)
+}
+
 /// Force push with lease (safer than --force)
 pub fn force_push_with_lease(branch: &str, verbose: bool) -> Result<()> {
     git_run(&["push", "--force-with-lease", "origin", branch], verbose)
