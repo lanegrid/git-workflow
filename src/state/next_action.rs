@@ -250,7 +250,14 @@ impl NextAction {
                     base_branch
                 ));
                 println!();
-                println!("  git fetch --prune && git rebase origin/main");
+                // `--onto` replays only THIS branch's commits. A plain
+                // `git rebase origin/main` would re-apply the (squash-)merged
+                // base's commits too, producing a doubled/conflicting diff.
+                println!("  git fetch --prune");
+                println!(
+                    "  git rebase --onto origin/main {}  # replay only your commits",
+                    base_branch
+                );
                 println!("  # then open a normal PR (base is now main):");
                 println!("  gh pr create -a \"@me\" -t \"...\"");
             }
