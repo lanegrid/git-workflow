@@ -3,6 +3,7 @@
 use std::process::ExitCode;
 
 use clap::Parser;
+use clap::error::ErrorKind;
 
 use git_workflow::cli::{Cli, Commands, PoolCommands, WorktreeCommands};
 use git_workflow::commands;
@@ -10,7 +11,10 @@ use git_workflow::error::GwError;
 use git_workflow::output;
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => return handle_parse_error(e),
+    };
 
     let result = match cli.command {
         Commands::Home => commands::home::run(cli.verbose),
@@ -62,6 +66,32 @@ fn main() -> ExitCode {
                 ]);
             }
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// Render clap parse failures, then guide the user to a runnable next command.
+///
+/// `--help`/`--version` aren't failures: print them as-is and exit 0. Real usage
+/// errors (bad subcommand, missing argument) get clap's message plus a `Try:`
+/// footer pointing at `gw status` -- the command that names the next step -- so
+/// the user never has to reconstruct the syntax themselves.
+fn handle_parse_error(e: clap::Error) -> ExitCode {
+    let kind = e.kind();
+    // clap writes help to stdout and errors to stderr; let it pick the stream.
+    let _ = e.print();
+
+    match kind {
+        ErrorKind::DisplayHelp
+        | ErrorKind::DisplayVersion
+        | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => ExitCode::SUCCESS,
+        _ => {
+            output::error_footer(&[
+                "gw status     # show where you are and the next command to run",
+                "gw --help     # full command reference",
+            ]);
+            // Clap uses exit code 2 for usage errors; mirror that.
+            ExitCode::from(2)
         }
     }
 }
