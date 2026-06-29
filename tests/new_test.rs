@@ -108,6 +108,12 @@ fn test_stack_branches_off_current_branch() {
         run_git(dir, &["config", "--get", "branch.feature/child.gwBase"]),
         "feature/parent"
     );
+    // The base tip SHA is recorded too (the rebase --onto boundary that
+    // survives the base branch being deleted) and equals the parent's HEAD.
+    assert_eq!(
+        run_git(dir, &["config", "--get", "branch.feature/child.gwBaseSha"]),
+        parent_head
+    );
 }
 
 #[test]

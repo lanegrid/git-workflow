@@ -34,8 +34,13 @@ pub enum NextAction {
     /// Base PR was merged, should sync (update base to main, rebase, push)
     SyncNeeded { base_branch: String },
     /// Recorded stacked base merged before this branch's PR was created; rebase
-    /// onto the default branch and open a normal (non-stacked) PR.
-    StackedBaseMerged { base_branch: String },
+    /// onto the default branch and open a normal (non-stacked) PR. `base_sha` is
+    /// the recorded base tip used as the `--onto` boundary when present (it
+    /// survives the base branch being deleted).
+    StackedBaseMerged {
+        base_branch: String,
+        base_sha: Option<String>,
+    },
 }
 
 /// Inputs for [`NextAction::detect`]. Bundled into a struct because the detected
@@ -56,6 +61,9 @@ pub struct DetectContext<'a> {
     /// The recorded base's PR has already merged (stale stacked base): the
     /// branch should rebase onto the default branch and open a normal PR.
     pub recorded_base_merged: bool,
+    /// Recorded base tip SHA (`gw new --stack`); the `--onto` boundary that
+    /// survives the base branch being deleted.
+    pub recorded_base_sha: Option<&'a str>,
 }
 
 impl NextAction {
@@ -70,6 +78,7 @@ impl NextAction {
         let base_pr_merged = ctx.base_pr_merged;
         let recorded_base = ctx.recorded_base;
         let recorded_base_merged = ctx.recorded_base_merged;
+        let recorded_base_sha = ctx.recorded_base_sha;
         // On home branch
         if current_branch == home_branch {
             // Behind upstream → sync first
@@ -131,6 +140,7 @@ impl NextAction {
                 if let Some(base) = recorded_base {
                     return NextAction::StackedBaseMerged {
                         base_branch: base.to_string(),
+                        base_sha: recorded_base_sha.map(String::from),
                     };
                 }
             }
@@ -244,7 +254,10 @@ impl NextAction {
                 println!();
                 println!("  gw sync");
             }
-            NextAction::StackedBaseMerged { base_branch } => {
+            NextAction::StackedBaseMerged {
+                base_branch,
+                base_sha,
+            } => {
                 output::action(&format!(
                     "Next: base '{}' merged — rebase onto main",
                     base_branch
@@ -253,10 +266,13 @@ impl NextAction {
                 // `--onto` replays only THIS branch's commits. A plain
                 // `git rebase origin/main` would re-apply the (squash-)merged
                 // base's commits too, producing a doubled/conflicting diff.
+                // Prefer the recorded base SHA: it still resolves even though
+                // the merged base branch has likely been deleted.
+                let onto = base_sha.as_deref().unwrap_or(base_branch);
                 println!("  git fetch --prune");
                 println!(
                     "  git rebase --onto origin/main {}  # replay only your commits",
-                    base_branch
+                    onto
                 );
                 println!("  # then open a normal PR (base is now main):");
                 println!("  gh pr create -a \"@me\" -t \"...\"");
@@ -310,6 +326,7 @@ mod tests {
             base_pr_merged: None,
             recorded_base: None,
             recorded_base_merged: false,
+            recorded_base_sha: None,
         }
     }
 
@@ -442,7 +459,32 @@ mod tests {
         assert_eq!(
             action,
             NextAction::StackedBaseMerged {
-                base_branch: "feature/parent".to_string()
+                base_branch: "feature/parent".to_string(),
+                base_sha: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_recorded_base_merged_carries_recorded_sha() {
+        let action = NextAction::detect(&DetectContext {
+            recorded_base: Some("feature/parent"),
+            recorded_base_merged: true,
+            recorded_base_sha: Some("abc1234"),
+            ..ctx(
+                "feature/child",
+                "main",
+                &WorkingDirState::Clean,
+                &SyncState::Synced,
+                None,
+                true,
+            )
+        });
+        assert_eq!(
+            action,
+            NextAction::StackedBaseMerged {
+                base_branch: "feature/parent".to_string(),
+                base_sha: Some("abc1234".to_string()),
             }
         );
     }

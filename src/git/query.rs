@@ -107,6 +107,16 @@ pub fn branch_base(branch: &str) -> Option<String> {
     if value.is_empty() { None } else { Some(value) }
 }
 
+/// Read the recorded base tip SHA for a branch (`branch.<name>.gwBaseSha`).
+///
+/// Recorded by `gw new --stack` as the parent's HEAD at stack time. Serves as a
+/// `git rebase --onto` boundary that survives even if the base branch ref is
+/// later deleted (e.g. cleaned up after its PR merged). `None` when unset.
+pub fn branch_base_sha(branch: &str) -> Option<String> {
+    let value = git_output(&["config", "--get", &format!("branch.{branch}.gwBaseSha")]).ok()?;
+    if value.is_empty() { None } else { Some(value) }
+}
+
 /// Get the current HEAD commit hash
 pub fn head_commit() -> Result<String> {
     git_output(&["rev-parse", "HEAD"])

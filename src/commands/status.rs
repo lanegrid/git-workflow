@@ -117,6 +117,11 @@ pub fn run() -> Result<()> {
             recorded_base_merged = check_base_pr_merged(base).is_some();
         }
     }
+    // The recorded base tip is the `rebase --onto` boundary that survives the
+    // base branch being deleted (used when the base merged before this PR).
+    let recorded_base_sha = recorded_base
+        .as_ref()
+        .and_then(|_| git::branch_base_sha(&current));
 
     // Stash count
     let stash_count = git::stash_count();
@@ -135,6 +140,7 @@ pub fn run() -> Result<()> {
         base_pr_merged: base_pr_merged.as_deref(),
         recorded_base: recorded_base.as_deref(),
         recorded_base_merged,
+        recorded_base_sha: recorded_base_sha.as_deref(),
     });
     next_action.display(&current);
 
