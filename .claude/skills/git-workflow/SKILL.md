@@ -142,12 +142,18 @@ Use the pre-warmed pool so parallel agents each get an isolated worktree.
 gw worktree pool warm 3                  # 1. pre-create once
 gw worktree pool status                  # 2. confirm available > 0
 WORKTREE_PATH=$(gw worktree pool acquire)  # 3. acquire (path → stdout)
-#                                          # 4. run the agent inside it
-gw worktree pool release <name>          # 5. release when done
+# (cd "$WORKTREE_PATH" && <project setup>) # 4. install deps in the fresh worktree
+#                                          # 5. run the agent inside it
+gw worktree pool release <name>          # 6. release when done
 gw worktree pool drain                   # remove all pool worktrees
 ```
 
 > **Always release, even on error** — a forgotten release drains the pool.
+
+> **Set up the worktree before launching the agent.** A freshly acquired pool
+> worktree has the code but not its dependencies or build artifacts
+> (`node_modules`, compiled output, etc.). Run the project's setup step inside
+> `$WORKTREE_PATH` before starting the agent, or its first commands fail.
 
 **gw owns worktrees in this repo — don't open a second path.** Claude Code's
 agent worktree isolation (`isolation: "worktree"`) creates worktrees `gw` can't
