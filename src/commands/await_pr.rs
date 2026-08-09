@@ -308,20 +308,36 @@ fn query_ci_state(pr: &str, verbose: bool) -> Result<CiState> {
         .args(args)
         .output()
         .map_err(|e| GwError::Other(format!("Could not query CI checks for PR #{pr}: {e}")))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    Ok(classify_ci_state(
+    let state = classify_ci_state(
         output.status.success(),
         output.status.code(),
+        &stdout,
         &stderr,
-    ))
+    );
+    // Surface transient query failures (network drop, API error) so a long
+    // retry streak is visible in the watcher log instead of silent.
+    if state == CiState::Pending && !output.status.success() && output.status.code() != Some(8) {
+        output::warn(&format!(
+            "Could not query CI checks: {} — retrying",
+            stderr.trim()
+        ));
+    }
+    Ok(state)
 }
 
 /// Classify a `gh pr checks` (no `--watch`) result into a [`CiState`].
 ///
-/// `gh` exit codes: 0 = all passed, 8 = some pending, 1 = failed *or* no checks
-/// reported (disambiguated by stderr). Anything else is treated as still
-/// pending so a transient `gh` hiccup retries rather than aborting the wait.
-fn classify_ci_state(success: bool, code: Option<i32>, stderr: &str) -> CiState {
+/// `gh` exit codes: 0 = all passed, 8 = some pending, 1 = failed, no checks
+/// reported, *or any other `gh` error* — network drops, API outages, and
+/// expired tokens all exit 1 too. What disambiguates a real CI verdict from a
+/// failed query is **stdout**: `gh pr checks` prints the check table to stdout
+/// when checks actually ran, and prints nothing there when `gh` itself failed.
+/// So exit 1 counts as `Failed` only with check output present; otherwise it's
+/// treated as still pending so the hiccup retries rather than aborting the
+/// wait with a bogus "CI failed".
+fn classify_ci_state(success: bool, code: Option<i32>, stdout: &str, stderr: &str) -> CiState {
     if success {
         return CiState::Passed;
     }
@@ -331,7 +347,7 @@ fn classify_ci_state(success: bool, code: Option<i32>, stderr: &str) -> CiState 
     if stderr.contains("no checks reported") {
         return CiState::NotStarted;
     }
-    if code == Some(1) {
+    if code == Some(1) && !stdout.trim().is_empty() {
         return CiState::Failed;
     }
     CiState::Pending
@@ -379,15 +395,25 @@ fn notify(message: &str, verbose: bool) {
 mod tests {
     use super::*;
 
+    /// A realistic non-TTY `gh pr checks` stdout: the tab-separated check table
+    /// that only exists when checks actually ran.
+    const CHECK_TABLE: &str = "build\tfail\t1m2s\thttps://github.com/o/r/actions/runs/1";
+
     #[test]
     fn exit_zero_means_passed() {
-        assert_eq!(classify_ci_state(true, Some(0), ""), CiState::Passed);
+        assert_eq!(
+            classify_ci_state(true, Some(0), CHECK_TABLE, ""),
+            CiState::Passed
+        );
     }
 
     #[test]
     fn exit_eight_means_pending() {
         // `gh pr checks` exits 8 while checks are still running.
-        assert_eq!(classify_ci_state(false, Some(8), ""), CiState::Pending);
+        assert_eq!(
+            classify_ci_state(false, Some(8), CHECK_TABLE, ""),
+            CiState::Pending
+        );
     }
 
     #[test]
@@ -398,6 +424,7 @@ mod tests {
             classify_ci_state(
                 false,
                 Some(1),
+                "",
                 "no checks reported on the 'feature/x' branch"
             ),
             CiState::NotStarted
@@ -405,18 +432,34 @@ mod tests {
     }
 
     #[test]
-    fn exit_one_with_checks_means_failed() {
+    fn exit_one_with_check_output_means_failed() {
         assert_eq!(
-            classify_ci_state(false, Some(1), "1 failing check"),
+            classify_ci_state(false, Some(1), CHECK_TABLE, "1 failing check"),
             CiState::Failed
         );
     }
 
     #[test]
-    fn unknown_failure_retries_as_pending() {
-        // A transient gh hiccup (e.g. network) shouldn't abort the wait.
+    fn exit_one_without_check_output_retries_as_pending() {
+        // gh exits 1 for its own errors too (network drop, API outage, expired
+        // token). No check table on stdout means no CI verdict was reached —
+        // retry instead of aborting the wait with a bogus "CI failed".
         assert_eq!(
-            classify_ci_state(false, None, "could not connect"),
+            classify_ci_state(
+                false,
+                Some(1),
+                "",
+                "error connecting to api.github.com\ncheck your internet connection"
+            ),
+            CiState::Pending
+        );
+    }
+
+    #[test]
+    fn unknown_failure_retries_as_pending() {
+        // A gh hiccup with no usable exit code shouldn't abort the wait either.
+        assert_eq!(
+            classify_ci_state(false, None, "", "could not connect"),
             CiState::Pending
         );
     }
