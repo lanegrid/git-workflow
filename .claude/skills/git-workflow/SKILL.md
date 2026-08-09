@@ -130,6 +130,12 @@ merge), `--ignore-ci-failure`, `--interval <secs>`.
 fails and you must push a fix, **stop the existing watcher with `TaskStop`
 first**, then fix, push, relaunch. Never run two watchers for the same PR.
 
+**Additional pushes do NOT require a watcher restart.** A running watcher is
+bound to the PR number and keeps following it across new commits — just commit
+and push. The stop-first rule applies **only** to the CI-failure fix loop (and
+to merging manually yourself). Cycling stop → push → relaunch on every push is
+wasted work.
+
 **When background output arrives** via `<system-reminder>`, you MUST:
 1. Read the watcher's output file.
 2. Report the result to the user immediately (merged/closed, cleanup ok/failed).
