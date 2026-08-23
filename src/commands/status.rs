@@ -13,6 +13,11 @@ pub fn run() -> Result<()> {
         return Err(GwError::NotAGitRepository);
     }
 
+    // Best-effort refresh of remote-tracking refs so "behind" numbers reflect
+    // the real remote, not the last time something else fetched. A repo with
+    // no reachable origin just reports from what it has.
+    let _ = git::fetch_prune(false);
+
     let repo_type = RepoType::detect()?;
     let home_branch = repo_type.home_branch();
     let current = git::current_branch()?;
@@ -123,6 +128,32 @@ pub fn run() -> Result<()> {
         .as_ref()
         .and_then(|_| git::branch_base_sha(&current));
 
+    // The base this branch should sit on, and how far it has moved since the
+    // branch last caught up. A stacked branch follows its parent (while the
+    // parent is in flight); everything else follows the default branch.
+    let (base_ref, behind_base) = if current != home_branch {
+        let base_ref = base_ref_for(
+            &default_branch,
+            pr_info.as_ref(),
+            recorded_base.as_deref(),
+            recorded_base_merged,
+        );
+        let behind = if git::ref_exists(&base_ref) {
+            git::behind_base_count("HEAD", &base_ref)
+        } else {
+            0
+        };
+        if behind > 0 {
+            output::warn(&format!(
+                "Behind {}: {} commit(s) (gw sync to catch up)",
+                base_ref, behind
+            ));
+        }
+        (base_ref, behind)
+    } else {
+        (format!("origin/{default_branch}"), 0)
+    };
+
     // Stash count
     let stash_count = git::stash_count();
     if stash_count > 0 {
@@ -141,10 +172,43 @@ pub fn run() -> Result<()> {
         recorded_base: recorded_base.as_deref(),
         recorded_base_merged,
         recorded_base_sha: recorded_base_sha.as_deref(),
+        base_ref: &base_ref,
+        behind_base,
     });
     next_action.display(&current);
 
     Ok(())
+}
+
+/// The ref a feature branch should sit on.
+///
+/// - open PR stacked on a parent → `origin/<parent>` (GitHub's base is
+///   authoritative once a PR exists)
+/// - no PR, recorded stacked base still in flight → `origin/<parent>` if
+///   pushed, else the local parent
+/// - otherwise → `origin/<default>`
+fn base_ref_for(
+    default_branch: &str,
+    pr_info: Option<&PrInfo>,
+    recorded_base: Option<&str>,
+    recorded_base_merged: bool,
+) -> String {
+    if let Some(pr) = pr_info {
+        if pr.state.is_open() && pr.base_branch != default_branch {
+            return format!("origin/{}", pr.base_branch);
+        }
+        return format!("origin/{default_branch}");
+    }
+    if let Some(base) = recorded_base {
+        if !recorded_base_merged {
+            let remote_ref = format!("origin/{base}");
+            if git::ref_exists(&remote_ref) {
+                return remote_ref;
+            }
+            return base.to_string();
+        }
+    }
+    format!("origin/{default_branch}")
 }
 
 /// Get and show PR information for a branch

@@ -53,7 +53,7 @@ Use `git-workflow` commands for git operations:
 - `git-workflow status` - Check state and see next action
 - `git-workflow pause "message"` - Save WIP and switch context
 - `git-workflow cleanup` - Delete merged branch safely
-- `git-workflow sync` - Update after base PR merged
+- `git-workflow sync` - Bring the branch up to date with its base (main, or the stacked parent)
 - `git-workflow open` - Open the current branch's PR in the browser
 - `git-workflow await` - Watch the PR to completion (CI → merge), then clean up
 ```
@@ -87,7 +87,7 @@ git-workflow cleanup
 | `git-workflow new <branch> --stack` | Stack a new branch on the current branch (for stacked PRs) |
 | `git-workflow status` | Show state and suggested next action |
 | `git-workflow home` | Return to home branch, sync with origin |
-| `git-workflow sync` | Sync current branch with origin/main |
+| `git-workflow sync` | Rebase the branch onto its latest base (`origin/main`, or the parent of a stacked PR); restacks onto `main` once the parent merges |
 | `git-workflow open` | Open the current branch's PR in the browser |
 | `git-workflow await` | Watch the PR until merged/closed, then clean up |
 | `git-workflow cleanup [branch]` | Delete merged branch (checks PR status) |
@@ -147,7 +147,7 @@ If `GW_NOTIFY_CMD` is unset, the notification step is simply skipped.
 - **Auto-fetch**: Every command fetches from origin first
 - **Protected branches**: Cannot delete `main`, `master`, or home branch
 - **PR verification**: `cleanup` checks GitHub PR status before deletion
-- **Fast-forward only**: `sync`/`home` refuse to create merge commits on diverged branches
+- **Fast-forward only**: `sync`/`home` refuse to create merge commits on diverged home branches; feature branches are rebased, never merged
 - **Unambiguous base**: `new` auto-bases on `origin/main` only from home; elsewhere it requires `--stack`. A dirty tree is carried on the current HEAD, so creating a branch never hits a merge conflict
 
 ## Git Worktree Support

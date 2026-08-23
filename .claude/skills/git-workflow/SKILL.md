@@ -26,8 +26,10 @@ prints one `Next:` line. Follow it. This is the situation → action → reason 
 | `Next: push to remote`            | `git push -u origin <branch>`                 | Publish the branch so a PR can open. |
 | `Next: create pull request`       | `gh pr create -a "@me" -t "..."`              | Every change ships through a PR. |
 | `Waiting: PR #N in review`        | `gw await <N> --open` (background)            | Hand CI → merge → cleanup to the watcher. |
-| `Next: rebase on latest main`     | `git fetch --prune && git rebase origin/main` | Catch up to `main` before continuing. |
+| `Next: sync with origin/main (N behind)` | `gw sync`                              | The base moved under you; rebase onto it before publishing. |
 | `Next: sync (base 'X' was merged)`| `gw sync`                                     | Restack this PR after its base merged. |
+| `Next: base 'X' merged — restack` | `gw sync`                                     | Same, before the PR exists: replay only your commits onto `main`, then open a normal PR. |
+| `Next: pull upstream changes`     | `git pull --rebase`                           | Someone pushed to *this* branch; take their commits. |
 
 ## Situation: shipping a change (the normal path)
 
@@ -80,7 +82,8 @@ gh pr create -a "@me" -B feature/parent -t "..."   # -B sets the PR base to the 
 | Next change builds on an open PR's branch | `gw new <child> --stack` (from the parent branch) | Bases the child on the parent's HEAD, not `origin/main`. Records the parent (and its tip SHA) so the rest of the flow knows it's stacked. |
 | Creating the stacked PR | `gh pr create -B <parent> ...` (or follow `gw status`) | A locally-stacked branch doesn't make GitHub default the base to the parent — set it explicitly with `-B`. `gw status` fills the `-B` in for you while the PR doesn't exist yet. |
 | Parent PR merged, child PR **open** | `gw sync` (on the child) | Restacks the child onto `main`: `git rebase --onto` replays only the child's commits (not the merged parent's), moves the PR base to `main`, force-pushes. Don't hand-rebase. |
-| Parent PR merged **before** the child got a PR | follow `gw status` | It detects the merged base and tells you to `git rebase --onto origin/main <recorded-base>` — replaying only your commits — then open a normal PR. |
+| Parent PR merged **before** the child got a PR | `gw sync` | Replays only your commits onto `main` (`rebase --onto` the recorded base tip), then open a normal PR. |
+| Parent PR still open but gained commits | `gw sync` (on the child) | Rebases the child onto the parent's latest tip and force-pushes. |
 
 Don't worry about cleaning up the parent yourself: **`gw cleanup` refuses to
 delete a branch while an open PR still targets it as base** (deleting it would
@@ -95,9 +98,9 @@ conflict.
 > **Why `--onto`, not a plain rebase?** After a squash merge, the parent's
 > commits exist on `main` only as a *new* squashed commit. A plain
 > `git rebase origin/main` would replay the parent's original commits too —
-> doubling them and inviting conflicts. `gw sync` (and the `gw status` hint)
-> use `git rebase --onto origin/main <old-base>` so only the child's own commits
-> move. Let `gw` do it.
+> doubling them and inviting conflicts. `gw sync` uses
+> `git rebase --onto origin/main <recorded base tip>` so only the child's own
+> commits move. Let `gw` do it.
 
 ## Situation: work gets interrupted or goes wrong
 
@@ -106,7 +109,7 @@ conflict.
 | Need to drop this and do something else | `gw pause [message]` | WIP commit + return home — safe worktree switch (don't `git stash`). |
 | Changes are a dead end | `gw abandon` | Discard everything, return home. |
 | Last commit was a mistake | `gw undo` | Soft reset `HEAD~1`; keeps the changes unstaged. |
-| `main` moved under you | `git fetch --prune && git rebase origin/main` | Replay your work on the latest `main`. |
+| `main` moved under you | `gw sync` | Rebases onto the latest `origin/main` and force-pushes (with lease) if the branch is published. |
 | Stacked PR's base just merged | `gw sync` | Updates the GitHub base, rebases, force-pushes — don't rebase stacked PRs by hand. |
 
 ## Situation: a PR is in flight — `gw await`
@@ -185,7 +188,7 @@ handles worktree boundaries for you. Because of them:
   `origin/main`). A direct checkout conflicts across worktrees.
 - **Don't `git stash`** — use `gw pause` (a WIP commit travels across worktrees
   safely; a stash doesn't).
-- **Don't hand-rebase stacked PRs** — use `gw sync`.
+- **Don't hand-rebase** — `gw sync` brings a branch onto its latest base (`main` or the stacked parent) and restacks after the parent merges.
 - **Don't push to `main`** — every change goes through a PR.
 - **Don't create worktrees outside `gw`** — no `git worktree add`, no agent
   `isolation: worktree`. `gw` is the single worktree authority here; a second

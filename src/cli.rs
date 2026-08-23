@@ -142,12 +142,19 @@ Example:
   gw undo")]
     Undo,
 
-    /// Sync current branch after base PR is merged (update base to main, rebase, force push)
+    /// Bring the current branch up to date with its base (rebase, force-push)
     #[command(long_about = "\
-Restack this branch after the PR it was based on merged.
+Bring this branch up to date with whatever it sits on.
 
-Updates the PR's base to main on GitHub, rebases onto the latest main, and
-force-pushes. Use this instead of hand-rebasing stacked PRs.
+  home branch                 fast-forward pull from origin/main
+  branch targeting main       rebase onto the latest origin/main
+  stacked, base PR open       rebase onto the latest origin/<base>
+  stacked, base PR merged     restack: replay only this branch's commits onto
+                              main (rebase --onto), move the PR base to main
+
+After rebasing, a published branch is force-pushed (--force-with-lease). Use
+this instead of hand-rebasing -- especially for stacked PRs, where a plain
+`git rebase` would re-apply the merged base's commits.
 
 Rewrites history and force-pushes the branch.
 

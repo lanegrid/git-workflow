@@ -25,8 +25,11 @@ pub enum NextAction {
     WaitingForReview { pr_number: u64 },
     /// PR is merged, should cleanup
     Cleanup,
-    /// Branch is behind origin/main, should rebase
-    RebaseNeeded,
+    /// The base this branch sits on (`origin/main`, or the stacked parent)
+    /// has new commits; catch up with `gw sync` before publishing.
+    BehindBase { base: String, behind_count: usize },
+    /// Someone pushed to this branch's upstream; pull those commits first.
+    PullUpstream { behind_count: usize },
     /// Branch has diverged from upstream, needs resolution
     ResolveDivergence,
     /// PR was closed without merging
@@ -64,6 +67,11 @@ pub struct DetectContext<'a> {
     /// Recorded base tip SHA (`gw new --stack`); the `--onto` boundary that
     /// survives the base branch being deleted.
     pub recorded_base_sha: Option<&'a str>,
+    /// The ref this branch should sit on: the stacked parent while one is in
+    /// flight, else the default branch (`origin/main`). Display only.
+    pub base_ref: &'a str,
+    /// Commits on `base_ref` that this branch does not have.
+    pub behind_base: usize,
 }
 
 impl NextAction {
@@ -79,6 +87,8 @@ impl NextAction {
         let recorded_base = ctx.recorded_base;
         let recorded_base_merged = ctx.recorded_base_merged;
         let recorded_base_sha = ctx.recorded_base_sha;
+        let base_ref = ctx.base_ref;
+        let behind_base = ctx.behind_base;
         // On home branch
         if current_branch == home_branch {
             // Behind upstream → sync first
@@ -119,9 +129,23 @@ impl NextAction {
             return NextAction::ResolveDivergence;
         }
 
-        // Behind upstream → rebase
-        if matches!(sync_state, SyncState::Behind { .. }) {
-            return NextAction::RebaseNeeded;
+        // Behind own upstream (someone pushed to this branch) → pull first
+        if let SyncState::Behind { count } = sync_state {
+            return NextAction::PullUpstream {
+                behind_count: *count,
+            };
+        }
+
+        // The base moved under this branch and the PR isn't open yet → catch
+        // up before publishing. Once a PR is open, being behind the base is
+        // normal (GitHub merges against the latest base); we don't force a
+        // rebase + force-push on every trunk commit.
+        let pr_open = pr_info.is_some_and(|pr| pr.state.is_open());
+        if behind_base > 0 && !pr_open {
+            return NextAction::BehindBase {
+                base: base_ref.to_string(),
+                behind_count: behind_base,
+            };
         }
 
         // Has unpushed commits or no upstream → push
@@ -226,19 +250,30 @@ impl NextAction {
                 println!();
                 println!("  gw cleanup");
             }
-            NextAction::RebaseNeeded => {
-                output::action("Next: rebase on latest main");
+            NextAction::BehindBase { base, behind_count } => {
+                output::action(&format!(
+                    "Next: sync with {} ({} commit(s) behind)",
+                    base, behind_count
+                ));
                 println!();
-                println!("  git fetch --prune && git rebase origin/main");
+                println!("  gw sync  # rebase onto the latest {base}");
+            }
+            NextAction::PullUpstream { behind_count } => {
+                output::action(&format!(
+                    "Next: pull upstream changes ({} commit(s) behind origin/{})",
+                    behind_count, branch
+                ));
+                println!();
+                println!("  git pull --rebase  # someone pushed to this branch");
             }
             NextAction::ResolveDivergence => {
-                output::action("Next: resolve divergence");
+                output::action(&format!("Next: resolve divergence from origin/{}", branch));
                 println!();
-                println!("  # Option 1: Rebase (preferred)");
-                println!("  git fetch --prune && git rebase origin/main");
-                println!();
-                println!("  # Option 2: Force push (if you know what you're doing)");
+                println!("  # Option 1: You rewrote history locally (rebase/amend) — publish it");
                 println!("  git push --force-with-lease");
+                println!();
+                println!("  # Option 2: Someone else pushed to this branch — take their commits");
+                println!("  git pull --rebase");
             }
             NextAction::PrClosed { pr_number } => {
                 output::action(&format!("PR #{} was closed without merging", pr_number));
@@ -254,26 +289,17 @@ impl NextAction {
                 println!();
                 println!("  gw sync");
             }
-            NextAction::StackedBaseMerged {
-                base_branch,
-                base_sha,
-            } => {
+            NextAction::StackedBaseMerged { base_branch, .. } => {
                 output::action(&format!(
-                    "Next: base '{}' merged — rebase onto main",
+                    "Next: base '{}' merged — restack onto main",
                     base_branch
                 ));
                 println!();
-                // `--onto` replays only THIS branch's commits. A plain
+                // `gw sync` uses `rebase --onto` with the recorded base tip, so
+                // only THIS branch's commits are replayed — a plain
                 // `git rebase origin/main` would re-apply the (squash-)merged
-                // base's commits too, producing a doubled/conflicting diff.
-                // Prefer the recorded base SHA: it still resolves even though
-                // the merged base branch has likely been deleted.
-                let onto = base_sha.as_deref().unwrap_or(base_branch);
-                println!("  git fetch --prune");
-                println!(
-                    "  git rebase --onto origin/main {}  # replay only your commits",
-                    onto
-                );
+                // base's commits too.
+                println!("  gw sync  # replay only your commits onto main");
                 println!("  # then open a normal PR (base is now main):");
                 println!("  gh pr create -a \"@me\" -t \"...\"");
             }
@@ -292,7 +318,8 @@ impl NextAction {
             NextAction::CreatePr { .. } => "create PR",
             NextAction::WaitingForReview { .. } => "waiting for review",
             NextAction::Cleanup => "cleanup branch",
-            NextAction::RebaseNeeded => "rebase needed",
+            NextAction::BehindBase { .. } => "sync with base",
+            NextAction::PullUpstream { .. } => "pull upstream",
             NextAction::ResolveDivergence => "resolve divergence",
             NextAction::PrClosed { .. } => "PR closed",
             NextAction::SyncNeeded { .. } => "sync needed",
@@ -327,6 +354,8 @@ mod tests {
             recorded_base: None,
             recorded_base_merged: false,
             recorded_base_sha: None,
+            base_ref: "origin/main",
+            behind_base: 0,
         }
     }
 
@@ -532,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn test_behind_suggests_rebase() {
+    fn test_behind_upstream_suggests_pull() {
         let action = NextAction::detect(&ctx(
             "feature/test",
             "main",
@@ -541,7 +570,102 @@ mod tests {
             None,
             true,
         ));
-        assert_eq!(action, NextAction::RebaseNeeded);
+        assert_eq!(action, NextAction::PullUpstream { behind_count: 3 });
+    }
+
+    #[test]
+    fn test_behind_base_before_pr_suggests_sync() {
+        let action = NextAction::detect(&DetectContext {
+            behind_base: 2,
+            ..ctx(
+                "feature/test",
+                "main",
+                &WorkingDirState::Clean,
+                &SyncState::Synced,
+                None,
+                true,
+            )
+        });
+        assert_eq!(
+            action,
+            NextAction::BehindBase {
+                base: "origin/main".to_string(),
+                behind_count: 2
+            }
+        );
+    }
+
+    #[test]
+    fn test_behind_base_takes_priority_over_push() {
+        let action = NextAction::detect(&DetectContext {
+            behind_base: 1,
+            ..ctx(
+                "feature/test",
+                "main",
+                &WorkingDirState::Clean,
+                &SyncState::HasUnpushedCommits { count: 2 },
+                None,
+                true,
+            )
+        });
+        assert!(matches!(action, NextAction::BehindBase { .. }));
+    }
+
+    #[test]
+    fn test_behind_stacked_parent_names_the_parent() {
+        let action = NextAction::detect(&DetectContext {
+            recorded_base: Some("feature/parent"),
+            base_ref: "origin/feature/parent",
+            behind_base: 4,
+            ..ctx(
+                "feature/child",
+                "main",
+                &WorkingDirState::Clean,
+                &SyncState::Synced,
+                None,
+                true,
+            )
+        });
+        assert_eq!(
+            action,
+            NextAction::BehindBase {
+                base: "origin/feature/parent".to_string(),
+                behind_count: 4
+            }
+        );
+    }
+
+    #[test]
+    fn test_behind_base_with_open_pr_still_waits_for_review() {
+        let pr = PrInfo::new(42, "Test PR", "https://...", PrState::Open, "main");
+        let action = NextAction::detect(&DetectContext {
+            behind_base: 5,
+            ..ctx(
+                "feature/test",
+                "main",
+                &WorkingDirState::Clean,
+                &SyncState::Synced,
+                Some(&pr),
+                true,
+            )
+        });
+        assert_eq!(action, NextAction::WaitingForReview { pr_number: 42 });
+    }
+
+    #[test]
+    fn test_uncommitted_changes_take_priority_over_behind_base() {
+        let action = NextAction::detect(&DetectContext {
+            behind_base: 5,
+            ..ctx(
+                "feature/test",
+                "main",
+                &WorkingDirState::HasUnstagedChanges,
+                &SyncState::Synced,
+                None,
+                true,
+            )
+        });
+        assert_eq!(action, NextAction::CommitChanges);
     }
 
     #[test]

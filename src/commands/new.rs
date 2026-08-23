@@ -171,7 +171,7 @@ pub fn run(branch_name: Option<String>, stack: bool, verbose: bool) -> Result<()
         "git add <files> && git commit -m \"feat: description\"".to_string(),
     ];
     if behind_count > 0 {
-        hint_lines.push("git rebase origin/main  # local main was behind; catch up".to_string());
+        hint_lines.push("gw sync  # local main was behind; catch up".to_string());
     }
     hint_lines.push(format!("git push -u origin {branch_name}"));
     hint_lines.push(match &pr_base {

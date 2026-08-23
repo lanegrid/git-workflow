@@ -162,3 +162,201 @@ fn test_sync_on_home_branch_when_already_up_to_date() {
         stdout
     );
 }
+
+/// Advance origin's `main` by one commit from a separate clone, so the local
+/// repo is behind without knowing it.
+fn advance_origin_main(origin: &Path, file: &str) {
+    let contributor = TempDir::new().expect("Failed to create temp dir");
+    let origin_url = format!("file://{}", origin.display());
+    run_git(contributor.path(), &["clone", "-q", &origin_url, "."]);
+    run_git(
+        contributor.path(),
+        &["config", "user.email", "contrib@example.com"],
+    );
+    run_git(contributor.path(), &["config", "user.name", "Contributor"]);
+    run_git(contributor.path(), &["checkout", "-q", "main"]);
+    std::fs::write(contributor.path().join(file), "content").expect("Failed to write file");
+    run_git(contributor.path(), &["add", "."]);
+    run_git(
+        contributor.path(),
+        &["commit", "-q", "-m", &format!("Add {file}")],
+    );
+    run_git(contributor.path(), &["push", "-q", "origin", "main"]);
+}
+
+fn commit_file(dir: &Path, name: &str, subject: &str) {
+    std::fs::write(dir.join(name), name).expect("write file");
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-q", "-m", subject]);
+}
+
+fn is_ancestor(dir: &Path, ancestor: &str, descendant: &str) -> bool {
+    Command::new("git")
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .current_dir(dir)
+        .status()
+        .expect("git merge-base")
+        .success()
+}
+
+fn subjects(dir: &Path, range: &str) -> Vec<String> {
+    run_git(dir, &["log", range, "--format=%s"])
+        .lines()
+        .map(String::from)
+        .collect()
+}
+
+#[test]
+fn test_sync_feature_branch_rebases_onto_advanced_main_and_force_pushes() {
+    let origin = create_origin_repo();
+    let local = create_local_repo(origin.path());
+    let p = local.path();
+
+    // Feature branch with one commit, published.
+    run_git(p, &["checkout", "-q", "-b", "feature/x"]);
+    commit_file(p, "x.txt", "feat: x");
+    run_git(p, &["push", "-q", "-u", "origin", "feature/x"]);
+
+    // main moves on without us.
+    advance_origin_main(origin.path(), "main_moved.txt");
+
+    let output = run_gw(p, &["sync"]);
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert!(
+        output.status.success(),
+        "gw sync failed: {}\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        stdout
+    );
+    assert!(stdout.contains("Rebasing onto origin/main"), "{stdout}");
+    assert!(stdout.contains("Force pushing"), "{stdout}");
+
+    // Branch now sits on the latest main with exactly its own commit on top.
+    assert!(is_ancestor(p, "origin/main", "HEAD"));
+    assert_eq!(subjects(p, "origin/main..HEAD"), vec!["feat: x"]);
+    // ...and the remote copy was updated to match.
+    assert_eq!(
+        run_git(p, &["rev-parse", "HEAD"]),
+        run_git(p, &["rev-parse", "origin/feature/x"])
+    );
+}
+
+#[test]
+fn test_sync_feature_branch_already_up_to_date() {
+    let origin = create_origin_repo();
+    let local = create_local_repo(origin.path());
+    let p = local.path();
+
+    run_git(p, &["checkout", "-q", "-b", "feature/x"]);
+    commit_file(p, "x.txt", "feat: x");
+    let head = get_head(p);
+
+    let output = run_gw(p, &["sync"]);
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert!(output.status.success(), "{stdout}");
+    assert!(
+        stdout.contains("Already up to date with origin/main"),
+        "{stdout}"
+    );
+    assert_eq!(get_head(p), head, "HEAD must not move when up to date");
+}
+
+#[test]
+fn test_sync_unpublished_branch_rebases_without_pushing() {
+    let origin = create_origin_repo();
+    let local = create_local_repo(origin.path());
+    let p = local.path();
+
+    run_git(p, &["checkout", "-q", "-b", "feature/x"]);
+    commit_file(p, "x.txt", "feat: x");
+    advance_origin_main(origin.path(), "main_moved.txt");
+
+    let output = run_gw(p, &["sync"]);
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert!(output.status.success(), "{stdout}");
+    assert!(is_ancestor(p, "origin/main", "HEAD"));
+    assert!(!stdout.contains("Force pushing"), "{stdout}");
+    assert!(
+        stdout.contains("git push -u origin feature/x"),
+        "should hint publishing: {stdout}"
+    );
+    assert!(
+        !git_ref_exists(p, "origin/feature/x"),
+        "an unpublished branch must stay unpublished"
+    );
+}
+
+fn git_ref_exists(dir: &Path, reference: &str) -> bool {
+    Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", reference])
+        .current_dir(dir)
+        .status()
+        .expect("git rev-parse")
+        .success()
+}
+
+#[test]
+fn test_sync_stacked_child_follows_parent_with_recorded_boundary() {
+    let origin = create_origin_repo();
+    let local = create_local_repo(origin.path());
+    let p = local.path();
+
+    // parent: main - P1 ; child stacked on it: + C1
+    run_git(p, &["checkout", "-q", "-b", "feature/parent"]);
+    commit_file(p, "p1.txt", "P1");
+    let out = run_gw(p, &["new", "feature/child", "--stack"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    commit_file(p, "c1.txt", "C1");
+
+    // Parent gains a commit after the child was stacked.
+    run_git(p, &["checkout", "-q", "feature/parent"]);
+    commit_file(p, "p2.txt", "P2");
+    let parent_tip = get_head(p);
+    run_git(p, &["checkout", "-q", "feature/child"]);
+
+    let output = run_gw(p, &["sync"]);
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert!(output.status.success(), "{stdout}");
+
+    // The child now sits on the parent's new tip with only its own commit on top.
+    assert!(is_ancestor(p, "feature/parent", "HEAD"));
+    assert_eq!(subjects(p, "feature/parent..HEAD"), vec!["C1"]);
+    // The recorded boundary advanced to the parent's new tip, so the next
+    // restack replays only the child's commits.
+    assert_eq!(
+        run_git(p, &["config", "--get", "branch.feature/child.gwBaseSha"]),
+        parent_tip
+    );
+    assert_eq!(
+        run_git(p, &["config", "--get", "branch.feature/child.gwBase"]),
+        "feature/parent"
+    );
+}
+
+#[test]
+fn test_status_reports_behind_main_and_suggests_sync() {
+    let origin = create_origin_repo();
+    let local = create_local_repo(origin.path());
+    let p = local.path();
+
+    run_git(p, &["checkout", "-q", "-b", "feature/x"]);
+    commit_file(p, "x.txt", "feat: x");
+    advance_origin_main(origin.path(), "main_moved.txt");
+
+    let output = run_gw(p, &["status"]);
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert!(output.status.success(), "{stdout}");
+    assert!(
+        stdout.contains("Behind origin/main: 1 commit(s)"),
+        "status should report the trunk moved: {stdout}"
+    );
+    assert!(
+        stdout.contains("Next: sync with origin/main (1 commit(s) behind)"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("gw sync"), "{stdout}");
+}
