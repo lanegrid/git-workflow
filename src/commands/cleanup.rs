@@ -63,8 +63,9 @@ pub fn run(branch_name: Option<String>, verbose: bool) -> Result<()> {
                 working_dir.description()
             ));
             println!();
-            output::action("git stash -u -m 'WIP before cleanup'");
-            output::action("git status");
+            output::action("git add <files> && git commit -m \"...\"  # commit first");
+            output::action("gw pause                                  # or park the work as WIP");
+            output::action("gw abandon                                # or discard it");
             return Err(GwError::UncommittedChanges);
         }
     }

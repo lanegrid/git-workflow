@@ -39,7 +39,9 @@ pub fn run(message: Option<String>, verbose: bool) -> Result<()> {
             None => "WIP: paused".to_string(),
         };
 
-        output::info("Creating WIP commit...");
+        // Everything goes into the WIP commit — untracked files included — so
+        // nothing is left behind in the worktree when you switch away.
+        output::info("Creating WIP commit (all changes, including untracked files)...");
         git::add_all(verbose)?;
         git::commit(&commit_message, verbose)?;
         output::success(&format!("Created: {}", commit_message));

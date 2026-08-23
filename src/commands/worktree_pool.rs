@@ -404,12 +404,17 @@ pub fn acquire(verbose: bool) -> Result<()> {
     let owner = leader_name()?;
     std::fs::write(acquired_dir.join(&entry.name), &owner)?;
 
-    // Sync worktree to latest (gw home equivalent)
+    // Sync worktree to latest (gw home equivalent). Fast-forward only, like
+    // `gw home`/`gw sync`: a pool home branch must never grow merge commits.
     let wt_path = entry.path.to_string_lossy().to_string();
     git::git_run_in_dir(&wt_path, &["fetch", "--prune"], verbose)?;
     let default_remote = git::get_default_remote_branch()?;
     let default_branch = default_remote.strip_prefix("origin/").unwrap_or("main");
-    git::git_run_in_dir(&wt_path, &["pull", "origin", default_branch], verbose)?;
+    git::git_run_in_dir(
+        &wt_path,
+        &["pull", "--ff-only", "origin", default_branch],
+        verbose,
+    )?;
 
     let path = entry.path.to_string_lossy().to_string();
     let name = entry.name.clone();
