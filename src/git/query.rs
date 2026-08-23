@@ -122,6 +122,11 @@ pub fn head_commit() -> Result<String> {
     git_output(&["rev-parse", "HEAD"])
 }
 
+/// Resolve a ref to its full commit SHA
+pub fn rev_parse(reference: &str) -> Result<String> {
+    git_output(&["rev-parse", "--verify", &format!("{reference}^{{commit}}")])
+}
+
 /// Get the short commit hash
 pub fn short_commit() -> Result<String> {
     git_output(&["rev-parse", "--short", "HEAD"])
@@ -190,6 +195,37 @@ pub fn behind_upstream_count(branch: &str) -> Result<usize> {
     let upstream = get_upstream(branch)
         .ok_or_else(|| GwError::Other(format!("Branch '{branch}' has no upstream")))?;
     commit_count(branch, &upstream)
+}
+
+/// Whether a ref (branch, remote-tracking ref, SHA) resolves locally.
+///
+/// Local lookup only (`rev-parse --verify`) — no network. Use after a fetch to
+/// check e.g. `origin/<branch>` without another round-trip.
+pub fn ref_exists(reference: &str) -> bool {
+    git_check(&[
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        &format!("{reference}^{{commit}}"),
+    ])
+}
+
+/// Whether `ancestor` is reachable from `descendant` (`merge-base --is-ancestor`).
+///
+/// `is_ancestor("origin/main", "HEAD")` answers "is this branch already on top
+/// of the latest main?" — the check behind "already up to date" in `gw sync`
+/// and the behind-main detection in `gw status`.
+pub fn is_ancestor(ancestor: &str, descendant: &str) -> bool {
+    git_check(&["merge-base", "--is-ancestor", ancestor, descendant])
+}
+
+/// How many commits `base` has that `branch` does not (`branch..base`).
+///
+/// For a feature branch and `origin/main`, this is how far the trunk moved
+/// since the branch last caught up; 0 means the branch sits on the latest base.
+/// Returns 0 when either ref is unresolvable.
+pub fn behind_base_count(branch: &str, base: &str) -> usize {
+    commit_count(branch, base).unwrap_or(0)
 }
 
 /// Count stashes
