@@ -133,10 +133,10 @@ Example:
 
     /// Undo the last commit (soft reset HEAD~1)
     #[command(long_about = "\
-Undo the last commit, keeping its changes as unstaged edits (soft reset HEAD~1).
+Undo the last commit, keeping its changes staged (soft reset HEAD~1).
 
-Lets you re-stage or rewrite the most recent commit. Touches history only -- your
-working files are left intact.
+Lets you amend what went into the most recent commit or rewrite its message.
+Touches history only -- your working files are left intact.
 
 Example:
   gw undo")]

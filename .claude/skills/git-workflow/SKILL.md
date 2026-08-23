@@ -108,7 +108,7 @@ conflict.
 |------|------|-----|
 | Need to drop this and do something else | `gw pause [message]` | WIP commit + return home — safe worktree switch (don't `git stash`). |
 | Changes are a dead end | `gw abandon` | Discard everything, return home. |
-| Last commit was a mistake | `gw undo` | Soft reset `HEAD~1`; keeps the changes unstaged. |
+| Last commit was a mistake | `gw undo` | Soft reset `HEAD~1`; the changes stay staged, ready to re-commit. |
 | `main` moved under you | `gw sync` | Rebases onto the latest `origin/main` and force-pushes (with lease) if the branch is published. |
 | Stacked PR's base just merged | `gw sync` | Updates the GitHub base, rebases, force-pushes — don't rebase stacked PRs by hand. |
 
@@ -176,8 +176,10 @@ born in is where it's pushed, watched, and torn down. Concretely:
 
 - **Don't run `gw await`/`gw cleanup` from a different worktree than the branch
   lives in** — `cleanup` can't delete a branch another worktree has checked out.
-- **Release (or remove) the worktree before cleanup deletes the branch** — `gw
-  worktree pool release` resets it off the branch, freeing it for deletion.
+- **Run `gw cleanup` inside the worktree, then `gw worktree pool release`** —
+  cleanup switches the worktree back to its pool home branch and deletes the
+  feature branch; release only clears the acquire marker (no git operations),
+  so a worktree released while still on the branch keeps that branch pinned.
 
 ## Worktree model & hard "don'ts"
 

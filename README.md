@@ -20,7 +20,7 @@ AI coding agents like Claude Code are powerful, but git is full of sharp edges:
 
 | Problem | gw Solution |
 |---------|-------------|
-| Stale branches | Auto-fetches before every operation |
+| Stale branches | Fetches before anything that depends on remote state |
 | Accidental deletions | Type-safe branch protection |
 | Unclear state | `gw status` shows exactly what to do next |
 | Diverged branches | Fast-forward only, with clear error + hints |
@@ -144,7 +144,7 @@ If `GW_NOTIFY_CMD` is unset, the notification step is simply skipped.
 
 ### Safety Features
 
-- **Auto-fetch**: Every command fetches from origin first
+- **Auto-fetch**: `new`, `status`, `sync`, `home`, `pause`, `abandon`, `cleanup` fetch from origin first
 - **Protected branches**: Cannot delete `main`, `master`, or home branch
 - **PR verification**: `cleanup` checks GitHub PR status before deletion
 - **Fast-forward only**: `sync`/`home` refuse to create merge commits on diverged home branches; feature branches are rebased, never merged
