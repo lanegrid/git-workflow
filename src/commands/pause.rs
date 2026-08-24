@@ -73,6 +73,9 @@ pub fn run(message: Option<String>, verbose: bool) -> Result<()> {
     if !git::branch_exists(home_branch) {
         git::checkout_new_branch(home_branch, &default_remote, verbose)?;
     } else {
+        // Ref first, checkout second: one working-tree transition, no
+        // stale-tree flash for anything watching the files.
+        helpers::fast_forward_home_ref(home_branch, &default_remote, verbose);
         git::checkout(home_branch, verbose)?;
     }
 

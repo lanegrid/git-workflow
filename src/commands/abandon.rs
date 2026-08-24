@@ -75,19 +75,24 @@ pub fn run(verbose: bool) -> Result<()> {
         output::success("Changes discarded");
     }
 
+    // Fetch before switching so the home ref can be fast-forwarded first.
+    git::fetch_prune(verbose)?;
+
     // Switch to home branch if not already there
     if current != home_branch {
         if !git::branch_exists(home_branch) {
             output::info(&format!("Creating home branch from {}...", default_remote));
             git::checkout_new_branch(home_branch, &default_remote, verbose)?;
         } else {
+            // Ref first, checkout second: one working-tree transition, no
+            // stale-tree flash for anything watching the files.
+            helpers::fast_forward_home_ref(home_branch, &default_remote, verbose);
             git::checkout(home_branch, verbose)?;
         }
         output::success(&format!("Switched to {}", output::bold(home_branch)));
     }
 
     // Sync with default remote (fast-forward only; stop on divergence)
-    git::fetch_prune(verbose)?;
     helpers::pull_with_output(&default_remote, default_branch, verbose)?;
 
     output::ready("Ready", home_branch);
