@@ -94,6 +94,16 @@ pub fn pull_ff_only(remote: &str, branch: &str, verbose: bool) -> Result<()> {
     git_run(&["pull", remote, branch, "--ff-only", "--quiet"], verbose)
 }
 
+/// Force-move a local branch ref to `target` (`git branch -f`).
+///
+/// Git itself refuses when `branch` is checked out in ANY worktree, so this
+/// can never yank a working tree out from under anyone; callers use it to
+/// fast-forward a branch that is not checked out (see
+/// `helpers::fast_forward_home_ref`).
+pub fn force_update_branch(branch: &str, target: &str, verbose: bool) -> Result<()> {
+    git_run(&["branch", "-f", branch, target], verbose)
+}
+
 /// Delete a local branch (safe delete, requires merge)
 pub fn delete_branch(branch: &str, verbose: bool) -> Result<()> {
     git_run(&["branch", "-d", branch], verbose)

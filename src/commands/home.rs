@@ -46,6 +46,9 @@ pub fn run(verbose: bool) -> Result<()> {
                 output::bold(home_branch)
             ));
         } else {
+            // Move the ref to the remote tip BEFORE the checkout so the
+            // working tree makes a single transition (no stale-tree flash).
+            helpers::fast_forward_home_ref(home_branch, &default_remote, verbose);
             git::checkout(home_branch, verbose)?;
             output::success(&format!("Switched to {}", output::bold(home_branch)));
         }
