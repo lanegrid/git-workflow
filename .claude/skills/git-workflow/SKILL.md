@@ -85,10 +85,11 @@ gh pr create -a "@me" -B feature/parent -t "..."   # -B sets the PR base to the 
 | Parent PR merged **before** the child got a PR | `gw sync` | Replays only your commits onto `main` (`rebase --onto` the recorded base tip), then open a normal PR. |
 | Parent PR still open but gained commits | `gw sync` (on the child) | Rebases the child onto the parent's latest tip and force-pushes. |
 
-Don't worry about cleaning up the parent yourself: **`gw cleanup` refuses to
-delete a branch while an open PR still targets it as base** (deleting it would
-make GitHub close that child PR). It deletes the parent only once the child has
-been `gw sync`'d onto `main`.
+**`gw cleanup` preserves the parent's remote branch while open child PRs
+target it as base.** Local cleanup can already have completed. The watcher
+exits after this attempt; it does not wait for children to restack. Run
+`gw sync` on each child, then rerun `gw cleanup <parent>` in the parent's
+worktree to finish the deferred remote deletion.
 
 `gw new` chooses a base unambiguously: it auto-bases on `origin/main` only from
 home; from a feature branch you must say `--stack` (or `gw home` first). A dirty
@@ -122,26 +123,53 @@ branches, and cleans up *that PR's* head branch on merge.
 [Bash(run_in_background=true)] gw await <pr#> --open
 ```
 
-It waits for CI, then (with `--open`) opens the PR, watches it to merge, and
-runs `gw cleanup` — hands-off. **If CI fails it stops and reports**, so you fix
-→ push → rerun `await` (or pass `--ignore-ci-failure` to watch regardless).
+It waits for CI, then (with `--open`) opens the PR, watches for merge, and
+runs `gw cleanup`. **Either a human or an agent can merge while it runs.**
+It observes the PR; it does not perform or block the merge. Even during CI
+waiting, a detected merge triggers cleanup. A closed, unmerged PR ends the
+watcher without cleanup.
 
 Flags: `--open`, `--no-wait` (skip the CI wait), `--no-cleanup` (stop after
 merge), `--ignore-ci-failure`, `--interval <secs>`.
 
-**One watcher per PR.** Launch `gw await <pr#>` once, after the final push. If CI
-fails and you must push a fix, **stop the existing watcher with `TaskStop`
-first**, then fix, push, relaunch. Never run two watchers for the same PR.
+**One watcher per PR.** Check the existing task before launching another.
+Additional pushes do not require restarting a live watcher: it follows the PR
+number across commits. Once it reaches merge-watching, however, it does **not**
+return to CI-waiting on a new push. The agent must check CI and review readiness
+for the latest head before merging; an earlier "CI checks passed" is not proof
+that the latest commit passed.
 
-**Additional pushes do NOT require a watcher restart.** A running watcher is
-bound to the PR number and keeps following it across new commits — just commit
-and push. The stop-first rule applies **only** to the CI-failure fix loop (and
-to merging manually yourself). Cycling stop → push → relaunch on every push is
-wasted work.
+**When the agent merges:**
 
-**When background output arrives** via `<system-reminder>`, you MUST:
-1. Read the watcher's output file.
-2. Report the result to the user immediately (merged/closed, cleanup ok/failed).
+1. Leave the watcher running. Run `gh pr merge <pr#>` with the appropriate
+   merge method, without `--delete-branch`. Use `--match-head-commit <SHA>` when
+   needed to bind the merge to the reviewed head.
+2. Let the watcher detect the merge, run cleanup, and exit. Do not run branch
+   deletion or `gw cleanup` concurrently. Auto-merge or merge-queue acceptance
+   is not a completed merge; keep watching until the PR actually merges.
+3. Read the task's output before starting new work in that worktree or releasing
+   it to the pool. Cleanup may switch it to home. Do not add follow-up commits
+   to the merged branch: cleanup permits force deletion for merged PRs and
+   skips the unpushed-commit check.
+
+**Failure and recovery:**
+
+- A CI failure detected during CI-waiting ends the watcher by default. Check
+  that it has exited, fix → push → restart `await`. An exited task needs no
+  `TaskStop`. With `--ignore-ci-failure`, it continues to watch for merge.
+- Stop a live watcher only when deliberately replacing it or taking over its
+  cleanup responsibility. Merging or pushing alone is not a reason to stop it.
+- If no watcher is running when the PR merges, rerun `gw await <pr#>` in the
+  owning worktree: an already-merged PR proceeds directly to cleanup.
+- Cleanup is one attempt, not a retry loop. Uncommitted changes on the target
+  checkout can abort it; dependent child PRs can defer remote deletion. Some
+  deletion failures are warnings even with a successful exit and a "Cleanup
+  complete" message. Inspect the output, resolve the cause, then rerun
+  `gw cleanup <branch>` after the watcher has exited.
+
+**When background output arrives**, read the watcher's output file and report
+the result immediately. Distinguish PR merged/closed from cleanup completed,
+failed, or partially deferred; task exit alone does not prove cleanup finished.
 
 ## Situation: running multiple agents in parallel — worktree pool
 
