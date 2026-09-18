@@ -13,6 +13,11 @@ pub fn run() -> Result<()> {
         return Err(GwError::NotAGitRepository);
     }
 
+    if let Some(hint) = super::sync::pending_recovery_hint()? {
+        output::warn(&hint);
+        return Ok(());
+    }
+
     // Best-effort refresh of remote-tracking refs so "behind" numbers reflect
     // the real remote, not the last time something else fetched. A repo with
     // no reachable origin just reports from what it has.

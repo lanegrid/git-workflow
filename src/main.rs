@@ -24,7 +24,7 @@ fn main() -> ExitCode {
         Commands::Pause { message } => commands::pause::run(message, cli.verbose),
         Commands::Abandon => commands::abandon::run(cli.verbose),
         Commands::Undo => commands::undo::run(cli.verbose),
-        Commands::Sync => commands::sync::run(cli.verbose),
+        Commands::Sync { abort } => commands::sync::run(abort, cli.verbose),
         Commands::Open => commands::open::run(cli.verbose),
         Commands::Await {
             pr,

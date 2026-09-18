@@ -70,7 +70,20 @@ fn run_git(dir: &Path, args: &[&str]) -> String {
 /// Run gw command in a specific directory
 fn run_gw(dir: &Path, args: &[&str]) -> Output {
     let gw_path = env!("CARGO_BIN_EXE_gw");
+    let mock_bin = TempDir::new().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let gh = mock_bin.path().join("gh");
+        std::fs::write(&gh, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut paths = vec![mock_bin.path().to_path_buf()];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
     Command::new(gw_path)
+        .env("PATH", std::env::join_paths(paths).unwrap())
         .args(args)
         .current_dir(dir)
         .env("NO_COLOR", "1") // Disable ANSI colors for easier testing

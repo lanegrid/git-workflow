@@ -15,8 +15,9 @@
 //! Rebasing a stacked branch always uses `--onto` with the recorded base tip
 //! (`gw new --stack` stores it) as the boundary, so only *this* branch's own
 //! commits are replayed — never the base's, which after a squash merge would be
-//! doubled and conflict-prone. A plain `git rebase` is used only when nothing
-//! better is known (base is `main`, or a stack created without `gw new --stack`).
+//! doubled and conflict-prone. Missing stack boundaries stop the operation.
+//! Publishing precedes PR retargeting; a shared-clone journal makes interrupted
+//! operations resumable without inferring a new boundary from rewritten history.
 //!
 //! # Example
 //!
@@ -30,8 +31,8 @@
 //!
 //! $ gw sync
 //!   Rebasing commits after <base tip> onto origin/main...
-//!   Updating PR base to main...
 //!   Force pushing...
+//!   Updating PR base to main...
 //!   ✓ Synced
 //! ```
 
@@ -40,9 +41,10 @@ use crate::error::{GwError, Result};
 use crate::git;
 use crate::github::{self, PrState};
 use crate::output;
-use crate::state::{RepoType, SyncState, WorkingDirState};
+use crate::state::{RepoType, WorkingDirState};
 
 /// How the branch should be moved onto its base.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Plan {
     /// Ref to rebase onto (`origin/main`, `origin/<parent>`, ...).
     new_base: String,
@@ -60,12 +62,16 @@ struct Plan {
 }
 
 /// Execute the `sync` command
-pub fn run(verbose: bool) -> Result<()> {
+pub fn run(abort: bool, verbose: bool) -> Result<()> {
     // 1. Check prerequisites
     if !git::is_git_repo() {
         return Err(GwError::NotAGitRepository);
     }
+    let _lifecycle_lock = git::lifecycle::LifecycleLock::acquire()?;
 
+    if abort {
+        return abort_pending_sync(verbose);
+    }
     let working_dir = WorkingDirState::detect();
     if !working_dir.is_clean() {
         output::error(&format!(
@@ -81,6 +87,9 @@ pub fn run(verbose: bool) -> Result<()> {
     let repo_type = RepoType::detect()?;
     let home_branch = repo_type.home_branch();
     let current = git::current_branch()?;
+    if let Some(pending) = read_pending_sync()? {
+        return resume_sync(pending, &current, verbose);
+    }
 
     // On home branch - just sync with origin/main
     if current == home_branch {
@@ -108,19 +117,10 @@ pub fn run(verbose: bool) -> Result<()> {
     output::info("Fetching from origin...");
     git::fetch_prune(verbose)?;
 
-    // 4. Look up this branch's PR. GitHub's base is authoritative once a PR
-    // exists; if we can't ask (no gh, not a GitHub remote, network), fall back
-    // to what we know locally — the recorded stacked base, else main — and say
-    // so.
+    // A failed GitHub query is not evidence that no PR exists. Avoid planning
+    // against stale local metadata when remote dependency state is unknown.
     let pr = if github::is_gh_available() {
-        match github::get_pr_for_branch(&current) {
-            Ok(pr) => pr,
-            Err(e) => {
-                output::warn(&format!("Could not fetch PR info: {e}"));
-                output::warn("Assuming no PR; syncing with the locally known base.");
-                None
-            }
-        }
+        github::get_pr_for_branch(&current)?
     } else {
         output::warn("GitHub CLI (gh) not available; syncing with the locally known base.");
         None
@@ -166,7 +166,11 @@ pub fn run(verbose: bool) -> Result<()> {
                 // retargeted it (the merged base branch was deleted), the
                 // branch still carries the old base's commits — restack with
                 // the recorded boundary instead of a plain rebase.
-                match retargeted_boundary(recorded_base.as_deref(), recorded_base_sha.as_deref()) {
+                match retargeted_boundary(
+                    recorded_base.as_deref(),
+                    recorded_base_sha.as_deref(),
+                    &default_remote,
+                )? {
                     Some(boundary) => Plan {
                         new_base: default_remote.clone(),
                         boundary: Some(boundary),
@@ -183,6 +187,12 @@ pub fn run(verbose: bool) -> Result<()> {
                     },
                 }
             } else {
+                if recorded_base
+                    .as_deref()
+                    .is_some_and(|base| base != pr.base_branch)
+                {
+                    return Err(GwError::Other("GitHub PR base differs from the recorded parent. Refusing to use another parent's fork point.".into()));
+                }
                 match plan_for_stacked_pr(
                     &pr.base_branch,
                     pr.number,
@@ -222,54 +232,72 @@ pub fn run(verbose: bool) -> Result<()> {
 fn retargeted_boundary(
     recorded_base: Option<&str>,
     recorded_base_sha: Option<&str>,
-) -> Option<String> {
-    let base = recorded_base?;
-    if !recorded_base_pr_merged(base) {
-        return None;
+    default_remote: &str,
+) -> Result<Option<String>> {
+    let Some(base) = recorded_base else {
+        return Ok(None);
+    };
+    if !recorded_base_pr_merged(base, default_remote)? {
+        return Err(GwError::Other("PR targets the default branch but its recorded parent is not confirmed integrated. Refusing a plain rebase.".into()));
     }
     output::info(&format!(
         "Recorded base '{}' merged and the PR now targets the default branch — restacking",
         base
     ));
-    boundary_for_merged_base(base, recorded_base_sha)
+    Ok(Some(required_boundary(base, recorded_base_sha)?))
 }
 
-/// Whether the recorded stacked base's PR has merged. "Can't tell" (no gh, not
-/// a GitHub remote, network) counts as not merged — we then keep following the
-/// base rather than guess it's gone.
-fn recorded_base_pr_merged(base: &str) -> bool {
+/// A recorded parent may only be dropped with positive integration evidence.
+/// Query failures propagate instead of being mistaken for an open parent.
+fn recorded_base_pr_merged(base: &str, default_remote: &str) -> Result<bool> {
     if !github::is_gh_available() {
-        return false;
+        return Ok(false);
     }
-    match github::get_pr_for_branch(base) {
-        Ok(Some(base_pr)) => base_pr.state.is_merged(),
-        Ok(None) => false,
-        Err(e) => {
-            output::warn(&format!("Could not check PR for base '{}': {}", base, e));
-            false
+    match github::get_pr_for_branch(base)? {
+        Some(pr) if pr.state.is_merged() => {
+            ensure_parent_integrated(&pr, default_remote)?;
+            Ok(true)
         }
+        Some(pr) if pr.state.is_closed() => Err(GwError::Other(format!(
+            "Parent '{}' was closed without merging; resolve its disposition before syncing.",
+            base
+        ))),
+        _ => Ok(false),
     }
 }
 
-/// The `--onto` boundary after a base merged: the recorded base tip if we have
-/// it (survives the base branch's deletion), else the remote-tracking ref of
-/// the base (cleanup keeps it alive while a child PR still targets it).
-fn boundary_for_merged_base(base: &str, recorded_base_sha: Option<&str>) -> Option<String> {
-    if let Some(sha) = recorded_base_sha {
-        return Some(sha.to_string());
+/// A merged PR may have landed on another feature branch. Only a positively
+/// confirmed integration into the fetched default branch permits dropping it.
+fn ensure_parent_integrated(pr: &github::PrInfo, default_remote: &str) -> Result<()> {
+    let default_branch = default_remote
+        .strip_prefix("origin/")
+        .unwrap_or(default_remote);
+    if pr.base_branch != default_branch {
+        return Err(GwError::Other(format!(
+            "Parent PR #{} merged into '{}', not '{}'. Refusing to drop its changes; integrate the parent stack into the default branch and reconcile its base first.",
+            pr.number, pr.base_branch, default_branch
+        )));
     }
-    let remote_ref = format!("origin/{base}");
-    if git::ref_exists(&remote_ref) {
-        return Some(remote_ref);
+    let integrated = match &pr.state {
+        PrState::Merged {
+            merge_commit: Some(sha),
+            ..
+        } => git::is_ancestor(sha, default_remote),
+        _ => false,
+    };
+    if !integrated {
+        return Err(GwError::Other(format!(
+            "Cannot confirm parent PR #{} is integrated in {}. Fetch/retry after integration; refusing to discard its commits.",
+            pr.number, default_remote
+        )));
     }
-    output::warn(&format!(
-        "Cannot find where '{}' was forked from (no recorded base tip, origin/{} is gone).",
-        base, base
-    ));
-    output::hints(&[&format!(
-        "git rebase --onto origin/main <last commit of {base}>  # replay only your commits"
-    )]);
-    None
+    Ok(())
+}
+
+fn required_boundary(base: &str, recorded_base_sha: Option<&str>) -> Result<String> {
+    recorded_base_sha.map(String::from).ok_or_else(|| GwError::Other(format!(
+        "No valid recorded fork point for '{}'. Refusing to infer it from a moving branch tip; recover the stack metadata before syncing.", base
+    )))
 }
 
 /// Plan for a PR stacked on `base` (GitHub base != default branch).
@@ -287,15 +315,14 @@ fn plan_for_stacked_pr(
                 "Base PR #{} ({}) is merged ✓",
                 base_pr.number, base
             ));
-            Ok(
-                boundary_for_merged_base(base, recorded_base_sha).map(|boundary| Plan {
-                    new_base: default_remote.to_string(),
-                    boundary: Some(boundary),
-                    retarget_pr: Some(pr_number),
-                    unstack: true,
-                    rerecord_base: false,
-                }),
-            )
+            ensure_parent_integrated(base_pr, default_remote)?;
+            Ok(Some(Plan {
+                new_base: default_remote.to_string(),
+                boundary: Some(required_boundary(base, recorded_base_sha)?),
+                retarget_pr: Some(pr_number),
+                unstack: true,
+                rerecord_base: false,
+            }))
         }
         Some(PrState::Closed) => {
             let base_pr = base_pr.as_ref().expect("matched Some");
@@ -324,7 +351,7 @@ fn plan_for_stacked_pr(
             }
             Ok(Some(Plan {
                 new_base: base_ref,
-                boundary: recorded_base_sha.map(String::from),
+                boundary: Some(required_boundary(base, recorded_base_sha)?),
                 retarget_pr: None,
                 unstack: false,
                 rerecord_base: recorded_base_sha.is_some(),
@@ -340,17 +367,15 @@ fn plan_for_recorded_base(
     recorded_base_sha: Option<&str>,
 ) -> Result<Option<Plan>> {
     output::info(&format!("Base: {} (stacked, PR not created yet)", base));
-    if recorded_base_pr_merged(base) {
+    if recorded_base_pr_merged(base, default_remote)? {
         output::success(&format!("Base '{}' merged ✓ — restacking onto main", base));
-        return Ok(
-            boundary_for_merged_base(base, recorded_base_sha).map(|boundary| Plan {
-                new_base: default_remote.to_string(),
-                boundary: Some(boundary),
-                retarget_pr: None,
-                unstack: true,
-                rerecord_base: false,
-            }),
-        );
+        return Ok(Some(Plan {
+            new_base: default_remote.to_string(),
+            boundary: Some(required_boundary(base, recorded_base_sha)?),
+            retarget_pr: None,
+            unstack: true,
+            rerecord_base: false,
+        }));
     }
     // Follow the parent: its remote ref if pushed, else the local branch.
     let remote_ref = format!("origin/{base}");
@@ -367,113 +392,202 @@ fn plan_for_recorded_base(
     };
     Ok(Some(Plan {
         new_base: base_ref,
-        boundary: recorded_base_sha.map(String::from),
+        boundary: Some(required_boundary(base, recorded_base_sha)?),
         retarget_pr: None,
         unstack: false,
         rerecord_base: recorded_base_sha.is_some(),
     }))
 }
 
-/// Rebase per `plan`, then publish (force-with-lease) if the branch is pushed.
-fn execute(plan: &Plan, current: &str, default_branch: &str, verbose: bool) -> Result<()> {
-    let upstream_exists = git::has_remote_tracking(current);
+/// Persist the operation before rewriting history. One journal per shared
+/// clone deliberately prevents cleanup/new/another sync until recovery finishes.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PendingSync {
+    branch: String,
+    worktree: std::path::PathBuf,
+    original_head: String,
+    rebased_head: Option<String>,
+    target_sha: String,
+    default_branch: String,
+    publish: bool,
+    expected_remote: Option<String>,
+    publication_finished: bool,
+    plan: Plan,
+}
 
-    println!();
-    if git::is_ancestor(&plan.new_base, "HEAD") && plan.retarget_pr.is_none() {
-        output::success(&format!("Already up to date with {}", plan.new_base));
-        // A previous local rebase/amend may still be unpublished.
-        if upstream_exists && matches!(SyncState::detect(current), Ok(SyncState::Diverged { .. })) {
-            output::info("Local history was rewritten but not pushed — publishing...");
-            git::force_push_with_lease(current, verbose)?;
-            output::success("Force pushed");
-        }
-        if plan.unstack {
-            git::unset_branch_base(current, verbose)?;
-        }
-        output::ready("Synced", current);
-        return Ok(());
+fn read_pending_sync() -> Result<Option<PendingSync>> {
+    let path = git::lifecycle::sync_journal_path()?;
+    match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| {
+            GwError::Other(format!("Cannot read sync journal {}: {e}", path.display()))
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
     }
+}
 
-    let behind = git::behind_base_count("HEAD", &plan.new_base);
-    output::info("Syncing...");
-
-    // Rebase first, then move the PR base, then push. Moving the base first
-    // would leave GitHub showing the new base while the branch still carried
-    // the old commits if the rebase then failed.
-    let result = match &plan.boundary {
-        Some(boundary) => {
-            output::info(&format!(
-                "  Rebasing commits after {} onto {} ({} new commit(s))...",
-                short(boundary),
-                plan.new_base,
-                behind
-            ));
-            git::rebase_onto(&plan.new_base, boundary, verbose)
-        }
-        None => {
-            output::info(&format!(
-                "  Rebasing onto {} ({} new commit(s))...",
-                plan.new_base, behind
-            ));
-            git::rebase(&plan.new_base, verbose)
-        }
-    };
-    if let Err(e) = result {
-        output::error("Rebase failed. You may need to resolve conflicts manually.");
-        output::action("git rebase --continue  # After resolving conflicts, then: gw sync");
-        output::action("git rebase --abort     # To cancel");
-        return Err(e);
-    }
-
-    if let Some(pr_number) = plan.retarget_pr {
-        output::info(&format!("  Updating PR base to {}...", default_branch));
-        github::update_pr_base(pr_number, default_branch)?;
-    }
-
-    if upstream_exists {
-        output::info("  Force pushing...");
-        git::force_push_with_lease(current, verbose)?;
-    }
-
-    if plan.unstack {
-        // The branch now targets the default branch, so it is no longer
-        // stacked -- drop the recorded base so `gw status` stops treating it
-        // as such.
-        git::unset_branch_base(current, verbose)?;
-    } else if plan.rerecord_base {
-        // Still stacked: the parent's current tip is the next `--onto`
-        // boundary.
-        if let Ok(sha) = git::rev_parse(&plan.new_base) {
-            git::set_branch_base_sha(current, &sha, verbose)?;
-        }
-    }
-
-    println!();
-    output::ready("Synced", current);
-    let mut hints: Vec<String> = Vec::new();
-    if let Some(pr_number) = plan.retarget_pr {
-        hints.push(format!(
-            "PR #{} base is now '{}'",
-            pr_number, default_branch
-        ));
-    }
-    if !upstream_exists {
-        hints.push(format!(
-            "git push -u origin {current}  # Publish when ready"
-        ));
-    }
-    hints.push("gw status  # Check status".to_string());
-    let hint_refs: Vec<&str> = hints.iter().map(String::as_str).collect();
-    output::hints(&hint_refs);
-
+fn save_pending_sync(pending: &PendingSync) -> Result<()> {
+    use std::io::Write;
+    let path = git::lifecycle::sync_journal_path()?;
+    let temporary = path.with_extension("tmp");
+    let bytes = serde_json::to_vec_pretty(pending).map_err(|e| GwError::Other(e.to_string()))?;
+    let mut file = std::fs::File::create(&temporary)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    std::fs::rename(temporary, path)?;
     Ok(())
 }
 
-/// Abbreviate a full SHA for display; leave named refs alone.
-fn short(reference: &str) -> &str {
-    if reference.len() == 40 && reference.chars().all(|c| c.is_ascii_hexdigit()) {
-        &reference[..7]
+fn execute(plan: &Plan, current: &str, default_branch: &str, verbose: bool) -> Result<()> {
+    // Resolve mutable refs once so the rebase and recorded boundary agree even
+    // if another tool fetches while this operation runs.
+    if git::is_ancestor(&plan.new_base, "HEAD") {
+        output::success(&format!("Already up to date with {}", plan.new_base));
     } else {
-        reference
+        output::info(&format!("Rebasing onto {}", plan.new_base));
     }
+    let expected_remote = git::remote_branch_tip(current)?;
+    let pending = PendingSync {
+        branch: current.to_string(),
+        worktree: git::worktree_root()?,
+        original_head: git::head_commit()?,
+        rebased_head: None,
+        target_sha: git::rev_parse(&plan.new_base)?,
+        default_branch: default_branch.to_string(),
+        publish: git::has_remote_tracking(current) || expected_remote.is_some(),
+        expected_remote,
+        publication_finished: false,
+        plan: Plan {
+            new_base: plan.new_base.clone(),
+            boundary: plan.boundary.clone(),
+            retarget_pr: plan.retarget_pr,
+            unstack: plan.unstack,
+            rerecord_base: plan.rerecord_base,
+        },
+    };
+    save_pending_sync(&pending)?;
+    resume_sync(pending, current, verbose)
+}
+
+fn resume_sync(mut pending: PendingSync, current: &str, verbose: bool) -> Result<()> {
+    if pending.branch != current || pending.worktree != git::worktree_root()? {
+        return Err(GwError::Other(format!(
+            "Unfinished sync belongs to '{}' in {}. Finish/abort any rebase there, then rerun gw sync in that worktree.",
+            pending.branch,
+            pending.worktree.display()
+        )));
+    }
+    let git_dir = git::git_dir()?;
+    if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
+        return Err(GwError::Other("A rebase is still in progress. Resolve it with git rebase --continue (or --abort), then rerun gw sync.".into()));
+    }
+    let head = git::head_commit()?;
+    if let Some(expected) = &pending.rebased_head {
+        if &head != expected {
+            return Err(GwError::Other("HEAD changed after the pending sync's rebase. Restore the recorded rebased head before retrying; refusing to publish unrelated commits.".into()));
+        }
+    } else {
+        if head == pending.original_head {
+            if !git::is_ancestor(&pending.target_sha, "HEAD") {
+                let result = match &pending.plan.boundary {
+                    Some(boundary) => git::rebase_onto(&pending.target_sha, boundary, verbose),
+                    None => git::rebase(&pending.target_sha, verbose),
+                };
+                if let Err(e) = result {
+                    output::warn(
+                        "Sync is recorded for recovery. Resolve/continue or abort the rebase, then rerun gw sync.",
+                    );
+                    return Err(e);
+                }
+            }
+        } else if !git::is_ancestor(&pending.target_sha, "HEAD") {
+            return Err(GwError::Other("Pending rebase has not reached its recorded target. Resolve/abort it before rerunning gw sync.".into()));
+        }
+        pending.rebased_head = Some(git::head_commit()?);
+        save_pending_sync(&pending)?;
+    }
+
+    // Publish before retargeting: GitHub's old dependency edge protects the
+    // parent until the rebased child has actually reached the remote.
+    if pending.publish {
+        let remote_tip = git::remote_branch_tip(current)?;
+        if remote_tip != pending.rebased_head {
+            if remote_tip != pending.expected_remote {
+                return Err(GwError::Other("Remote changed during pending sync. Refusing to overwrite it; preserve the journal and reconcile the remote change first.".into()));
+            }
+            output::info("Force pushing...");
+            git::push_with_expected_tip(
+                current,
+                pending.expected_remote.as_deref().unwrap_or(""),
+                verbose,
+            )?;
+            output::success("Force pushed");
+        }
+    }
+    pending.publication_finished = true;
+    save_pending_sync(&pending)?;
+    if let Some(pr_number) = pending.plan.retarget_pr {
+        github::update_pr_base(pr_number, &pending.default_branch)?;
+    }
+    if pending.plan.unstack {
+        git::unset_branch_base(current, verbose)?;
+    } else if pending.plan.rerecord_base {
+        git::set_branch_base_sha(current, &pending.target_sha, verbose)?;
+    }
+    std::fs::remove_file(git::lifecycle::sync_journal_path()?)?;
+    output::ready("Synced", current);
+    if !pending.publish {
+        output::hints(&[&format!(
+            "git push -u origin {current}  # Publish when ready"
+        )]);
+    }
+    output::hints(&["gw status  # Check status"]);
+    Ok(())
+}
+
+/// Status must route recovery before deriving a fresh action from partial state.
+pub fn pending_recovery_hint() -> Result<Option<String>> {
+    Ok(read_pending_sync()?.map(|pending| format!(
+        "Unfinished sync on '{}' in {}. Finish/abort any active rebase there, then run gw sync to resume (or gw sync --abort before publication).",
+        pending.branch, pending.worktree.display()
+    )))
+}
+
+fn abort_pending_sync(verbose: bool) -> Result<()> {
+    let Some(pending) = read_pending_sync()? else {
+        output::info("No pending sync to abort.");
+        return Ok(());
+    };
+    if pending.worktree != git::worktree_root()? {
+        return Err(GwError::Other(format!(
+            "Abort sync in its original worktree: {}",
+            pending.worktree.display()
+        )));
+    }
+    let dir = git::git_dir()?;
+    if dir.join("rebase-merge").exists() || dir.join("rebase-apply").exists() {
+        return Err(GwError::Other(
+            "Run git rebase --abort first, then gw sync --abort.".into(),
+        ));
+    }
+    if git::current_branch()? != pending.branch || !WorkingDirState::detect().is_clean() {
+        return Err(GwError::Other(
+            "Return to the pending branch with a clean working tree before aborting sync.".into(),
+        ));
+    }
+    if pending.publication_finished
+        || git::remote_branch_tip(&pending.branch)? != pending.expected_remote
+    {
+        return Err(GwError::Other("Sync was published or the remote changed. Refusing rollback; resume gw sync after reconciling the remote.".into()));
+    }
+    let head = git::head_commit()?;
+    if head != pending.original_head {
+        if pending.rebased_head.as_ref() != Some(&head) {
+            return Err(GwError::Other("HEAD differs from the recorded sync checkpoints. Refusing rollback of unrelated work.".into()));
+        }
+        git::git_run_in_dir(".", &["reset", "--keep", &pending.original_head], verbose)?;
+    }
+    std::fs::remove_file(git::lifecycle::sync_journal_path()?)?;
+    output::success("Sync aborted; original head and dependency metadata preserved.");
+    Ok(())
 }

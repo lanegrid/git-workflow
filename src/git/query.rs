@@ -305,3 +305,34 @@ pub fn is_detached_head() -> bool {
 pub fn repo_root() -> Result<PathBuf> {
     git_output(&["rev-parse", "--show-toplevel"]).map(PathBuf::from)
 }
+
+/// Local dependency edges, including children without a GitHub PR. Enumerate
+/// actual refs so stale config for deleted branches does not pin a parent.
+/// Read all config at once: query errors must not mean "no dependents".
+pub fn local_children(parent: &str) -> Result<Vec<String>> {
+    let branches = git_output(&["for-each-ref", "--format=%(refname:strip=2)", "refs/heads/"])?;
+    let config = git_output(&["config", "--null", "--list"])?;
+    let mut children = Vec::new();
+    for branch in branches.lines() {
+        let key = format!("branch.{branch}.gwbase");
+        if config.split('\0').any(|entry| {
+            entry
+                .split_once('\n')
+                .is_some_and(|(k, v)| k == key && v == parent)
+        }) {
+            children.push(branch.to_string());
+        }
+    }
+    Ok(children)
+}
+
+/// Exact current remote tip, for resuming a publish without overwriting a
+/// collaborator's commits. Unlike a tracking ref this is not changed by fetch.
+pub fn remote_branch_tip(branch: &str) -> Result<Option<String>> {
+    let reference = format!("refs/heads/{branch}");
+    let output = git_output(&["ls-remote", "--heads", "origin", &reference])?;
+    Ok(output.lines().find_map(|line| {
+        let (sha, name) = line.split_once('\t')?;
+        (name == reference).then(|| sha.to_string())
+    }))
+}

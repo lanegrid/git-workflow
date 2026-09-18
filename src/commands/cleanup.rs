@@ -15,6 +15,8 @@ pub fn run(branch_name: Option<String>, verbose: bool) -> Result<()> {
     if !git::is_git_repo() {
         return Err(GwError::NotAGitRepository);
     }
+    let _lifecycle_lock = git::lifecycle::LifecycleLock::acquire()?;
+    git::lifecycle::require_no_pending_sync()?;
 
     let repo_type = RepoType::detect()?;
     let home_branch = repo_type.home_branch();
@@ -45,6 +47,15 @@ pub fn run(branch_name: Option<String>, verbose: bool) -> Result<()> {
     let branch = classify_branch(&branch_to_delete, &repo_type);
     let deletable_branch = branch.try_deletable()?;
 
+    let children = git::local_children(&branch_to_delete)?;
+    if !children.is_empty() {
+        return Err(GwError::Other(format!(
+            "Cleanup deferred: local children still depend on '{}': {}. Run gw sync on each child before retrying cleanup.",
+            branch_to_delete,
+            children.join(", ")
+        )));
+    }
+
     // Check if branch exists locally
     let branch_exists = git::branch_exists(&branch_to_delete);
     if !branch_exists {
@@ -73,6 +84,11 @@ pub fn run(branch_name: Option<String>, verbose: bool) -> Result<()> {
     // Query PR information from GitHub
     let pr_info = query_pr_info(&branch_to_delete);
     let force_delete_allowed = should_allow_force_delete(&pr_info);
+    if force_delete_allowed && remote_deletion_blocked_by_children(&branch_to_delete) {
+        return Err(GwError::Other(
+            "Cleanup deferred: remote dependencies could not be cleared. Restack children and retry cleanup.".into(),
+        ));
+    }
 
     // Safety check: unpushed commits (skip if PR is merged)
     if branch_exists && !force_delete_allowed {

@@ -261,3 +261,16 @@ pub fn git_run_in_dir(dir: &str, args: &[&str], verbose: bool) -> Result<()> {
         Err(GwError::GitCommandFailed(stderr))
     }
 }
+
+/// Publish only if the remote still has the exact tip captured before rebase.
+pub fn push_with_expected_tip(branch: &str, expected: &str, verbose: bool) -> Result<()> {
+    git_run(
+        &[
+            "push",
+            &format!("--force-with-lease=refs/heads/{branch}:{expected}"),
+            "origin",
+            &format!("HEAD:refs/heads/{branch}"),
+        ],
+        verbose,
+    )
+}

@@ -1,5 +1,6 @@
 //! Git abstraction layer
 
+pub mod lifecycle;
 pub mod mutation;
 pub mod query;
 
