@@ -87,7 +87,8 @@ git-workflow cleanup
 | `git-workflow new <branch> --stack` | Stack a new branch on the current branch (for stacked PRs) |
 | `git-workflow status` | Show state and suggested next action |
 | `git-workflow home` | Return to home branch, sync with origin |
-| `git-workflow sync` | Rebase the branch onto its latest base (`origin/main`, or the parent of a stacked PR); restacks onto `main` once the parent merges |
+| `git-workflow sync` | Rebase onto the latest base; restack onto `main` after confirming the parent was integrated; resume an interrupted sync |
+| `git-workflow sync --abort` | Roll back an interrupted sync before publication, preserving the original head and dependencies |
 | `git-workflow open` | Open the current branch's PR in the browser |
 | `git-workflow await` | Watch the PR until merged/closed, then clean up |
 | `git-workflow cleanup [branch]` | Delete merged branch (checks PR status) |
@@ -147,6 +148,7 @@ If `GW_NOTIFY_CMD` is unset, the notification step is simply skipped.
 - **Auto-fetch**: `new`, `status`, `sync`, `home`, `pause`, `abandon`, `cleanup` fetch from origin first
 - **Protected branches**: Cannot delete `main`, `master`, or home branch
 - **PR verification**: `cleanup` checks GitHub PR status before deletion
+- **Stack dependencies**: `cleanup` defers deletion for recorded local children or open child PRs. `new`, `sync`, and `cleanup` coordinate across linked worktrees; interrupted syncs retain a recovery journal. See [stack safety, recovery, and remaining limitations](docs/stack-safety.md).
 - **Fast-forward only**: `sync`/`home` refuse to create merge commits on diverged home branches; feature branches are rebased, never merged
 - **Unambiguous base**: `new` auto-bases on `origin/main` only from home; elsewhere it requires `--stack`. A dirty tree is carried on the current HEAD, so creating a branch never hits a merge conflict
 

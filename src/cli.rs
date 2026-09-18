@@ -150,17 +150,26 @@ Bring this branch up to date with whatever it sits on.
   branch targeting main       rebase onto the latest origin/main
   stacked, base PR open       rebase onto the latest origin/<base>
   stacked, base PR merged     restack: replay only this branch's commits onto
-                              main (rebase --onto), move the PR base to main
+                              main (rebase --onto), publish, then move PR base
+                              (requires confirmed integration into main)
 
 After rebasing, a published branch is force-pushed (--force-with-lease). Use
 this instead of hand-rebasing -- especially for stacked PRs, where a plain
 `git rebase` would re-apply the merged base's commits.
 
+Interrupted syncs are recorded: rerun gw sync in the original worktree to resume.
+Use gw sync --abort to roll back before publication (abort an active rebase first).
+Missing stack boundaries and parents merged into a non-default branch are refused.
+
 Rewrites history and force-pushes the branch.
 
 Example:
   gw sync")]
-    Sync,
+    Sync {
+        /// Roll back an unpublished interrupted sync (after aborting any active rebase)
+        #[arg(long)]
+        abort: bool,
+    },
 
     /// Open the PR for the current branch in the browser
     #[command(long_about = "\

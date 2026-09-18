@@ -81,15 +81,26 @@ gh pr create -a "@me" -B feature/parent -t "..."   # -B sets the PR base to the 
 |------|------|-----|
 | Next change builds on an open PR's branch | `gw new <child> --stack` (from the parent branch) | Bases the child on the parent's HEAD, not `origin/main`. Records the parent (and its tip SHA) so the rest of the flow knows it's stacked. |
 | Creating the stacked PR | `gh pr create -B <parent> ...` (or follow `gw status`) | A locally-stacked branch doesn't make GitHub default the base to the parent — set it explicitly with `-B`. `gw status` fills the `-B` in for you while the PR doesn't exist yet. |
-| Parent PR merged, child PR **open** | `gw sync` (on the child) | Restacks the child onto `main`: `git rebase --onto` replays only the child's commits (not the merged parent's), moves the PR base to `main`, force-pushes. Don't hand-rebase. |
+| Parent PR merged, child PR **open** | `gw sync` (on the child) | Restacks the child onto `main`: `git rebase --onto` replays only the child's commits (not the merged parent's), force-pushes, then moves the PR base to `main`. Don't hand-rebase. |
 | Parent PR merged **before** the child got a PR | `gw sync` | Replays only your commits onto `main` (`rebase --onto` the recorded base tip), then open a normal PR. |
 | Parent PR still open but gained commits | `gw sync` (on the child) | Rebases the child onto the parent's latest tip and force-pushes. |
 
-**`gw cleanup` preserves the parent's remote branch while open child PRs
-target it as base.** Local cleanup can already have completed. The watcher
-exits after this attempt; it does not wait for children to restack. Run
-`gw sync` on each child, then rerun `gw cleanup <parent>` in the parent's
-worktree to finish the deferred remote deletion.
+**`gw cleanup` defers both local and remote deletion while known children
+still depend on the parent.** It checks local recorded children (including
+branches without a PR) and open GitHub child PRs. Run `gw sync` on each child,
+then rerun `gw cleanup <parent>` in the parent's worktree. An await task that
+encounters this guard exits; it does not wait for children to restack.
+
+Stack mutations are serialized across linked worktrees. If `sync` is
+interrupted, `gw status` identifies its owning worktree: rerun `gw sync` there
+instead of hand-rebasing or editing the PR base. For conflicts, finish
+`git rebase --continue` first. To cancel before publication, abort any active
+Git rebase, then use `gw sync --abort`. After publication, resume to completion.
+An unfinished sync blocks other stack mutations and cleanup until resolved.
+
+A stacked sync refuses missing fork-point metadata and parents merged into a
+non-default branch. Do not bypass these guards with a plain rebase or branch
+deletion. See [stack safety and remaining limitations](../../../docs/stack-safety.md).
 
 `gw new` chooses a base unambiguously: it auto-bases on `origin/main` only from
 home; from a feature branch you must say `--stack` (or `gw home` first). A dirty
@@ -111,7 +122,7 @@ conflict.
 | Changes are a dead end | `gw abandon` | Discard everything, return home. |
 | Last commit was a mistake | `gw undo` | Soft reset `HEAD~1`; the changes stay staged, ready to re-commit. |
 | `main` moved under you | `gw sync` | Rebases onto the latest `origin/main` and force-pushes (with lease) if the branch is published. |
-| Stacked PR's base just merged | `gw sync` | Updates the GitHub base, rebases, force-pushes — don't rebase stacked PRs by hand. |
+| Stacked PR's base just merged | `gw sync` | Rebases, force-pushes, then updates the GitHub base — don't rebase stacked PRs by hand. |
 
 ## Situation: a PR is in flight — `gw await`
 

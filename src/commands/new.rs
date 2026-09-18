@@ -24,6 +24,8 @@ pub fn run(branch_name: Option<String>, stack: bool, verbose: bool) -> Result<()
     if !git::is_git_repo() {
         return Err(GwError::NotAGitRepository);
     }
+    let _lifecycle_lock = git::lifecycle::LifecycleLock::acquire()?;
+    git::lifecycle::require_no_pending_sync()?;
 
     // A detached HEAD has no branch context, so we can't tell home from a
     // feature branch nor stack on anything. Refuse rather than guess.
