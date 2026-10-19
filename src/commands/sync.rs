@@ -722,7 +722,10 @@ fn abort_pending_sync(verbose: bool) -> Result<()> {
 /// Run snapshot commands with checked status. Do not infer successful reads from
 /// empty output (a failed stash query must never mean "no snapshot exists").
 fn work_git(args: &[&str]) -> Result<String> {
-    let result = std::process::Command::new("git").args(args).output()?;
+    let result = std::process::Command::new("git")
+        .args(args)
+        .current_dir(git::worktree_root()?)
+        .output()?;
     if !result.status.success() {
         return Err(GwError::GitCommandFailed(
             String::from_utf8_lossy(&result.stderr).trim().to_string(),

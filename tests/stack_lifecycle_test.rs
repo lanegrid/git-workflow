@@ -574,7 +574,12 @@ fn restore_conflict_is_failure_and_requires_explicit_acknowledgment() {
         fs::read_to_string(r.local.join("initial")).unwrap(),
         contents
     );
-    failure(r.gw(&["sync", "--finish-work"]), "Unresolved files remain");
+    let nested = r.local.join("nested");
+    fs::create_dir(&nested).unwrap();
+    failure(
+        r.command(&nested, &["sync", "--finish-work"]),
+        "Unresolved files remain",
+    );
     let status = r.gw(&["status"]);
     assert!(String::from_utf8_lossy(&status.stdout).contains("gw sync --finish-work"));
     fs::write(r.local.join("initial"), "resolved local edit\n").unwrap();
@@ -772,4 +777,23 @@ fn keep_work_rebase_conflict_can_abort_or_continue_without_losing_local_work() {
         );
         assert!(!r.journal().exists());
     }
+}
+
+#[test]
+fn keep_work_from_subdirectory_preserves_untracked_files_outside_it() {
+    let r = Repo::new();
+    let nested = r.local.join("nested");
+    fs::create_dir(&nested).unwrap();
+    r.commit("nested/keep");
+    git(&r.local, &["push", "origin", "main"]);
+    r.stack();
+    r.merged_parent("main");
+    fs::write(r.local.join("scratch"), "outside nested directory").unwrap();
+    failure(r.command(&nested, &["sync"]), "gw sync --keep-work");
+    success(r.command(&nested, &["sync", "--keep-work"]));
+    assert_eq!(
+        fs::read_to_string(r.local.join("scratch")).unwrap(),
+        "outside nested directory"
+    );
+    assert!(!r.journal().exists());
 }

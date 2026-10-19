@@ -154,7 +154,7 @@ pub fn has_uncommitted_changes() -> bool {
 
 /// Check if working directory has untracked files
 pub fn has_untracked_files() -> bool {
-    git_output(&["ls-files", "--others", "--exclude-standard"])
+    git_output(&["ls-files", "--others", "--exclude-standard", "--", ":/"])
         .map(|s| !s.is_empty())
         .unwrap_or(false)
 }
