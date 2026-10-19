@@ -180,7 +180,15 @@ pub fn run() -> Result<()> {
         base_ref: &base_ref,
         behind_base,
     });
-    next_action.display(&current);
+    next_action.display(&current, !working_dir.is_clean());
+    if !working_dir.is_clean()
+        && behind_base > 0
+        && matches!(next_action, NextAction::CommitChanges)
+    {
+        output::hints(&[
+            "gw sync --keep-work  # Update the base while preserving work and staging",
+        ]);
+    }
 
     Ok(())
 }

@@ -459,3 +459,317 @@ fn failed_pr_query_does_not_fall_back_to_a_different_base() {
     assert_eq!(r.head(), before);
     assert!(!r.journal().exists());
 }
+
+fn local_work(r: &Repo) -> String {
+    fs::write(r.local.join("initial"), "staged\n").unwrap();
+    git(&r.local, &["add", "initial"]);
+    fs::write(r.local.join("initial"), "staged\nunstaged\n").unwrap();
+    fs::write(r.local.join("scratch"), "untracked work").unwrap();
+    git(&r.local, &["status", "--porcelain"])
+}
+
+fn saved_ref(r: &Repo) -> String {
+    let journal: serde_json::Value =
+        serde_json::from_slice(&fs::read(r.journal()).unwrap()).unwrap();
+    format!(
+        "refs/gw/sync-work/{}",
+        journal["work"]["token"].as_str().unwrap()
+    )
+}
+
+#[test]
+fn keep_work_restacks_and_preserves_index_untracked_and_existing_stashes() {
+    let r = Repo::new();
+    r.stack();
+    r.merged_parent("main");
+    fs::write(r.local.join("initial"), "previous stash").unwrap();
+    git(&r.local, &["stash", "push", "-m", "user stash"]);
+    let stash = git(&r.local, &["rev-parse", "refs/stash"]);
+    let before = local_work(&r);
+    fs::write(r.local.join(".git/info/exclude"), "ignored\n").unwrap();
+    fs::write(r.local.join("ignored"), "ignored work").unwrap();
+    failure(r.gw(&["sync"]), "gw sync --keep-work");
+    assert_eq!(git(&r.local, &["status", "--porcelain"]), before);
+    success(r.gw(&["sync", "--keep-work"]));
+    assert_eq!(git(&r.local, &["status", "--porcelain"]), before);
+    assert_eq!(git(&r.local, &["rev-parse", "refs/stash"]), stash);
+    assert_eq!(git(&r.local, &["stash", "list"]).lines().count(), 1);
+    assert_eq!(
+        fs::read_to_string(r.local.join("scratch")).unwrap(),
+        "untracked work"
+    );
+    assert_eq!(
+        fs::read_to_string(r.local.join("ignored")).unwrap(),
+        "ignored work"
+    );
+    assert_eq!(git(&r.remote, &["show", "child:initial"]), "initial");
+    assert_eq!(
+        git(&r.remote, &["log", "main..child", "--format=%s"]),
+        "child-change"
+    );
+    assert!(!r.journal().exists());
+    assert!(git(&r.local, &["for-each-ref", "refs/gw/sync-work/"]).is_empty());
+}
+
+#[test]
+fn keep_work_survives_push_failure_and_stash_changes_then_resumes() {
+    let r = Repo::new();
+    r.stack();
+    r.merged_parent("main");
+    let before = local_work(&r);
+    fs::write(r.mock.join("fail-push"), "").unwrap();
+    failure(r.gw(&["sync", "--keep-work"]), "injected push failure");
+    let backup = saved_ref(&r);
+    assert!(!git(&r.local, &["rev-parse", &backup]).is_empty());
+    assert!(git(&r.local, &["status", "--porcelain"]).is_empty());
+    // Another tool/worktree can change the shared stash list while sync is paused.
+    fs::write(r.local.join("initial"), "someone else's stash").unwrap();
+    git(&r.local, &["stash", "push", "-m", "other work"]);
+    let other = git(&r.local, &["rev-parse", "refs/stash"]);
+    fs::remove_file(r.mock.join("fail-push")).unwrap();
+    success(r.gw(&["sync"]));
+    assert_eq!(git(&r.local, &["status", "--porcelain"]), before);
+    assert_eq!(git(&r.local, &["rev-parse", "refs/stash"]), other);
+    assert!(!r.journal().exists());
+}
+
+#[test]
+fn keep_work_abort_restores_original_head_and_staging() {
+    let r = Repo::new();
+    r.stack();
+    r.merged_parent("main");
+    let head = r.head();
+    let before = local_work(&r);
+    fs::write(r.mock.join("fail-push"), "").unwrap();
+    failure(r.gw(&["sync", "--keep-work"]), "injected push failure");
+    success(r.gw(&["sync", "--abort"]));
+    assert_eq!(r.head(), head);
+    assert_eq!(git(&r.local, &["status", "--porcelain"]), before);
+    assert_eq!(git(&r.local, &["config", "branch.child.gwBase"]), "parent");
+    assert!(!r.journal().exists());
+}
+
+#[test]
+fn restore_conflict_is_failure_and_requires_explicit_acknowledgment() {
+    let r = Repo::new();
+    git(&r.local, &["checkout", "-b", "feature"]);
+    r.commit("feature-change");
+    git(&r.local, &["push", "-u", "origin", "feature"]);
+    git(&r.local, &["checkout", "main"]);
+    fs::write(r.local.join("initial"), "upstream edit\n").unwrap();
+    git(&r.local, &["commit", "-am", "upstream edit"]);
+    git(&r.local, &["push", "origin", "main"]);
+    git(&r.local, &["checkout", "feature"]);
+    fs::write(r.local.join("initial"), "local edit\n").unwrap();
+    failure(
+        r.gw(&["sync", "--keep-work"]),
+        "local work restoration failed",
+    );
+    let backup = saved_ref(&r);
+    assert_eq!(git(&r.remote, &["rev-parse", "feature"]), r.head());
+    assert!(!r.local.join(".git/rebase-merge").exists());
+    let contents = fs::read_to_string(r.local.join("initial")).unwrap();
+    failure(r.gw(&["sync"]), "gw sync --finish-work");
+    assert_eq!(
+        fs::read_to_string(r.local.join("initial")).unwrap(),
+        contents
+    );
+    failure(r.gw(&["sync", "--finish-work"]), "Unresolved files remain");
+    let status = r.gw(&["status"]);
+    assert!(String::from_utf8_lossy(&status.stdout).contains("gw sync --finish-work"));
+    fs::write(r.local.join("initial"), "resolved local edit\n").unwrap();
+    git(&r.local, &["add", "initial"]);
+    success(r.gw(&["sync", "--finish-work"]));
+    assert_eq!(
+        fs::read_to_string(r.local.join("initial")).unwrap(),
+        "resolved local edit\n"
+    );
+    assert!(!r.journal().exists());
+    assert!(git(&r.local, &["for-each-ref", &backup]).is_empty());
+}
+
+#[test]
+fn keep_work_handles_home_fast_forward_and_untracked_path_collision() {
+    let r = Repo::new();
+    git(&r.local, &["branch", "old-home"]);
+    r.commit("scratch");
+    git(&r.local, &["push", "origin", "main"]);
+    git(&r.local, &["reset", "--hard", "old-home"]);
+    fs::write(r.local.join("scratch"), "local untracked").unwrap();
+    failure(
+        r.gw(&["sync", "--keep-work"]),
+        "local work restoration failed",
+    );
+    assert_eq!(r.head(), git(&r.remote, &["rev-parse", "main"]));
+    let reference = saved_ref(&r);
+    assert_eq!(
+        git(&r.local, &["show", &format!("{reference}^3:scratch")]),
+        "local untracked"
+    );
+    // The user explicitly reconciles the collision before finishing.
+    fs::write(r.local.join("scratch"), "reconciled work").unwrap();
+    success(r.gw(&["sync", "--finish-work"]));
+    assert_eq!(
+        fs::read_to_string(r.local.join("scratch")).unwrap(),
+        "reconciled work"
+    );
+}
+
+#[test]
+fn keep_work_rejects_resume_from_another_worktree() {
+    let r = Repo::new();
+    r.stack();
+    r.merged_parent("main");
+    local_work(&r);
+    fs::write(r.mock.join("fail-push"), "").unwrap();
+    failure(r.gw(&["sync", "--keep-work"]), "injected push failure");
+    let other = r._root.path().join("other");
+    git(
+        &r.local,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "other",
+            other.to_str().unwrap(),
+            "main",
+        ],
+    );
+    failure(r.command(&other, &["sync"]), "Unfinished sync belongs");
+    failure(r.command(&other, &["sync", "--abort"]), "original worktree");
+    assert!(r.journal().exists());
+}
+
+#[test]
+fn keep_work_preflight_failures_leave_work_untouched_and_flags_validate() {
+    let r = Repo::new();
+    r.stack();
+    let before = local_work(&r);
+    fs::write(r.mock.join("fail-query"), "").unwrap();
+    failure(r.gw(&["sync", "--keep-work"]), "API unavailable");
+    assert_eq!(git(&r.local, &["status", "--porcelain"]), before);
+    assert!(!r.journal().exists());
+    for flags in [
+        ["--abort", "--keep-work"],
+        ["--abort", "--finish-work"],
+        ["--keep-work", "--finish-work"],
+    ] {
+        let out = r.gw(&["sync", flags[0], flags[1]]);
+        assert_eq!(out.status.code(), Some(2));
+    }
+    failure(
+        r.gw(&["sync", "--finish-work"]),
+        "No interrupted work restoration",
+    );
+}
+
+#[test]
+fn keep_work_noop_does_not_create_snapshot_or_change_staging() {
+    let r = Repo::new();
+    git(&r.local, &["checkout", "-b", "feature"]);
+    let before = local_work(&r);
+    let out = r.gw(&["sync", "--keep-work"]);
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("Saving staged"));
+    success(out);
+    assert_eq!(git(&r.local, &["status", "--porcelain"]), before);
+    assert!(!r.journal().exists());
+    assert!(git(&r.local, &["stash", "list"]).is_empty());
+}
+
+#[test]
+fn keep_work_recovers_capture_and_interrupted_restoration_without_reapplying() {
+    let r = Repo::new();
+    r.stack();
+    r.merged_parent("main");
+    local_work(&r);
+    fs::write(r.mock.join("fail-push"), "").unwrap();
+    failure(r.gw(&["sync", "--keep-work"]), "injected push failure");
+    let reference = saved_ref(&r);
+    let mut journal: serde_json::Value =
+        serde_json::from_slice(&fs::read(r.journal()).unwrap()).unwrap();
+    let oid = journal["work"]["oid"].as_str().unwrap().to_string();
+    // Simulate interruption after stash creation, before pin/journal capture.
+    git(
+        &r.local,
+        &[
+            "stash",
+            "store",
+            "-m",
+            &format!("On child: {}", journal["work"]["token"].as_str().unwrap()),
+            &oid,
+        ],
+    );
+    git(&r.local, &["update-ref", "-d", &reference]);
+    journal["work"]["oid"] = serde_json::Value::Null;
+    fs::write(r.journal(), serde_json::to_vec(&journal).unwrap()).unwrap();
+    failure(r.gw(&["sync"]), "injected push failure");
+    assert_eq!(git(&r.local, &["rev-parse", &reference]), oid);
+    assert!(git(&r.local, &["stash", "list"]).is_empty());
+    // Simulate a crash after applying saved work but before recording success.
+    git(&r.local, &["stash", "apply", "--index", &reference]);
+    journal = serde_json::from_slice(&fs::read(r.journal()).unwrap()).unwrap();
+    journal["work"]["restoring"] = true.into();
+    fs::write(r.journal(), serde_json::to_vec(&journal).unwrap()).unwrap();
+    let before = git(&r.local, &["status", "--porcelain"]);
+    fs::remove_file(r.mock.join("fail-push")).unwrap();
+    failure(r.gw(&["sync"]), "gw sync --finish-work");
+    assert_eq!(git(&r.local, &["status", "--porcelain"]), before);
+    success(r.gw(&["sync", "--finish-work"]));
+    assert_eq!(git(&r.local, &["status", "--porcelain"]), before);
+    assert!(!r.journal().exists());
+}
+
+#[test]
+fn dirty_status_suggests_keep_work_when_parent_merged() {
+    let r = Repo::new();
+    r.stack();
+    r.merged_parent("main");
+    local_work(&r);
+    let out = r.gw(&["status"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("gw sync --keep-work"));
+    success(out);
+}
+
+#[test]
+fn keep_work_rebase_conflict_can_abort_or_continue_without_losing_local_work() {
+    for abort in [true, false] {
+        let r = Repo::new();
+        r.stack();
+        git(&r.local, &["checkout", "parent"]);
+        fs::write(r.local.join("initial"), "parent edit").unwrap();
+        git(&r.local, &["commit", "-am", "parent edit"]);
+        git(&r.local, &["push", "origin", "parent"]);
+        git(&r.local, &["checkout", "child"]);
+        fs::write(r.local.join("initial"), "child edit").unwrap();
+        git(&r.local, &["commit", "-am", "child edit"]);
+        let original = r.head();
+        fs::write(r.local.join("child-change"), "staged work\n").unwrap();
+        git(&r.local, &["add", "child-change"]);
+        fs::write(r.local.join("child-change"), "staged work\nunstaged work\n").unwrap();
+        fs::write(r.local.join("scratch"), "untracked").unwrap();
+        let before = git(&r.local, &["status", "--porcelain"]);
+        failure(r.gw(&["sync", "--keep-work"]), "recorded for recovery");
+        assert!(!r.local.join("scratch").exists());
+        if abort {
+            git(&r.local, &["rebase", "--abort"]);
+            success(r.gw(&["sync", "--abort"]));
+            assert_eq!(r.head(), original);
+        } else {
+            fs::write(r.local.join("initial"), "resolved committed edit").unwrap();
+            git(&r.local, &["add", "initial"]);
+            git(
+                &r.local,
+                &["-c", "core.editor=true", "rebase", "--continue"],
+            );
+            success(r.gw(&["sync"]));
+            assert_ne!(r.head(), original);
+            assert_eq!(git(&r.remote, &["rev-parse", "child"]), r.head());
+        }
+        assert_eq!(git(&r.local, &["status", "--porcelain"]), before);
+        assert_eq!(
+            fs::read_to_string(r.local.join("scratch")).unwrap(),
+            "untracked"
+        );
+        assert!(!r.journal().exists());
+    }
+}

@@ -88,6 +88,8 @@ git-workflow cleanup
 | `git-workflow status` | Show state and suggested next action |
 | `git-workflow home` | Return to home branch, sync with origin |
 | `git-workflow sync` | Rebase onto the latest base; restack onto `main` after confirming the parent was integrated; resume an interrupted sync |
+| `git-workflow sync --keep-work` | Save staged, unstaged, and untracked work locally; sync committed history, then restore work and staging |
+| `git-workflow sync --finish-work` | Acknowledge manual restoration after resolving saved-work conflicts |
 | `git-workflow sync --abort` | Roll back an interrupted sync before publication, preserving the original head and dependencies |
 | `git-workflow open` | Open the current branch's PR in the browser |
 | `git-workflow await` | Watch the PR until merged/closed, then clean up |
@@ -236,3 +238,29 @@ MIT OR Apache-2.0
 ## Contributing
 
 Contributions welcome! Please submit a Pull Request.
+
+### Sync while work is in progress
+
+Use `gw sync --keep-work` to stay on your branch and update its base without
+committing unfinished changes. Only committed history is pushed. Staged,
+unstaged, and untracked changes are saved locally and restored with their index
+state when possible; ignored files are excluded. A sync that requires no update
+does not save or rewrite your work.
+
+If a committed-history rebase conflicts, resolve it and run
+`git rebase --continue`, then `gw sync`. Before publication, you can instead
+run `git rebase --abort` followed by `gw sync --abort`; saved work is restored.
+
+If **work restoration** fails, sync exits unsuccessfully and retains a backup
+at the `refs/gw/sync-work/...` reference printed in the error. The rebase has
+already finished. Inspect the backup with
+`git stash show -p --include-untracked <reference>`, resolve/restore the files,
+and run `gw sync --finish-work`. That command acknowledges your manual
+restoration and removes the backup and recovery journal. It refuses unresolved
+index conflicts. Stage state may need manual reconstruction after conflicts.
+For an untracked path collision, recover the original file with
+`git show <reference>^3:<path>` and reconcile it with the new tracked file.
+
+Interrupted syncs resume with `gw sync` in the original worktree, including after
+push failures. Once restoration has started, retrying will not apply the saved
+changes twice: review the files and explicitly use `--finish-work` if needed.

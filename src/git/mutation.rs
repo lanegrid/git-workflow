@@ -162,7 +162,10 @@ pub fn rebase(target: &str, verbose: bool) -> Result<()> {
 /// conflict-prone, especially after a squash merge. `--onto` replays only
 /// `old_base..HEAD`, i.e. this branch's own commits.
 pub fn rebase_onto(new_base: &str, old_base: &str, verbose: bool) -> Result<()> {
-    git_run(&["rebase", "--onto", new_base, old_base], verbose)
+    git_run(
+        &["rebase", "--no-autostash", "--onto", new_base, old_base],
+        verbose,
+    )
 }
 
 /// Force push with lease (safer than --force)

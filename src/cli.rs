@@ -157,6 +157,11 @@ After rebasing, a published branch is force-pushed (--force-with-lease). Use
 this instead of hand-rebasing -- especially for stacked PRs, where a plain
 `git rebase` would re-apply the merged base's commits.
 
+With uncommitted changes, use --keep-work to save staged, unstaged, and
+untracked changes locally, sync/publish committed history, then restore the work.
+Ignored files are not saved. No temporary WIP commit is pushed.
+If restoration conflicts, resolve the files and run gw sync --finish-work.
+
 Interrupted syncs are recorded: rerun gw sync in the original worktree to resume.
 Use gw sync --abort to roll back before publication (abort an active rebase first).
 Missing stack boundaries and parents merged into a non-default branch are refused.
@@ -167,8 +172,14 @@ Example:
   gw sync")]
     Sync {
         /// Roll back an unpublished interrupted sync (after aborting any active rebase)
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["keep_work", "finish_work"])]
         abort: bool,
+        /// Save local work, sync committed history, then restore work and staging
+        #[arg(long, conflicts_with = "finish_work")]
+        keep_work: bool,
+        /// Acknowledge manual work restoration after resolving restore conflicts
+        #[arg(long)]
+        finish_work: bool,
     },
 
     /// Open the PR for the current branch in the browser
