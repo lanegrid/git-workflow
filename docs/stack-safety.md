@@ -39,7 +39,17 @@ the default branch even when its PR targeted another feature branch.
 
 The common Git directory contains `gw-sync.json` while a sync is unfinished.
 It records the branch, owning worktree, original/rebased heads, frozen target,
-expected remote head, publication checkpoint, and metadata update plan. Writes
+expected remote head, publication checkpoint, and metadata update plan.
+`--keep-work` adds a unique snapshot token/OID and restoration checkpoints.
+The journal is written before snapshot creation; a unique stash message recovers
+an interrupted capture. The snapshot is pinned under `refs/gw/sync-work/<token>`
+before its own stash-list entry is removed. Other worktrees' stashes are not used
+for restoration. Snapshot restoration starts only after publication and metadata
+updates. The restoring checkpoint precedes application, so a crash or conflict
+requires explicit manual acknowledgment with `gw sync --finish-work`; retries
+never blindly apply a partially restored snapshot again. Successful restoration
+is recorded before deleting the backup. `--abort` restores saved work after
+rolling history back and records rollback intent for interrupted recovery. Writes
 use a temporary file and atomic rename. The OS releases the advisory lock when
 the process exits; the journal remains to protect dependencies across failures.
 

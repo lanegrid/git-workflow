@@ -187,10 +187,15 @@ impl NextAction {
     }
 
     /// Display the next action with commands
-    pub fn display(&self, branch: &str) {
+    pub fn display(&self, branch: &str, has_local_work: bool) {
         println!();
         output::separator();
 
+        let sync_command = if has_local_work {
+            "gw sync --keep-work"
+        } else {
+            "gw sync"
+        };
         match self {
             NextAction::StartNewWork => {
                 output::action("Next: start new work");
@@ -203,7 +208,7 @@ impl NextAction {
                     behind_count
                 ));
                 println!();
-                println!("  gw home");
+                println!("  {sync_command}");
             }
             NextAction::CommitChanges => {
                 output::action("Next: commit changes");
@@ -256,7 +261,7 @@ impl NextAction {
                     base, behind_count
                 ));
                 println!();
-                println!("  gw sync  # rebase onto the latest {base}");
+                println!("  {sync_command}  # rebase onto the latest {base}");
             }
             NextAction::PullUpstream { behind_count } => {
                 output::action(&format!(
@@ -287,7 +292,7 @@ impl NextAction {
             NextAction::SyncNeeded { base_branch } => {
                 output::action(&format!("Next: sync (base '{}' was merged)", base_branch));
                 println!();
-                println!("  gw sync");
+                println!("  {sync_command}");
             }
             NextAction::StackedBaseMerged { base_branch, .. } => {
                 output::action(&format!(
@@ -299,7 +304,7 @@ impl NextAction {
                 // only THIS branch's commits are replayed — a plain
                 // `git rebase origin/main` would re-apply the (squash-)merged
                 // base's commits too.
-                println!("  gw sync  # replay only your commits onto main");
+                println!("  {sync_command}  # replay only your commits onto main");
                 println!("  # then open a normal PR (base is now main):");
                 println!("  gh pr create -a \"@me\" -t \"...\"");
             }

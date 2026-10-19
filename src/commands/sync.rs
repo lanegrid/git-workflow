@@ -62,7 +62,7 @@ struct Plan {
 }
 
 /// Execute the `sync` command
-pub fn run(abort: bool, verbose: bool) -> Result<()> {
+pub fn run(abort: bool, keep_work: bool, finish_work: bool, verbose: bool) -> Result<()> {
     // 1. Check prerequisites
     if !git::is_git_repo() {
         return Err(GwError::NotAGitRepository);
@@ -72,24 +72,32 @@ pub fn run(abort: bool, verbose: bool) -> Result<()> {
     if abort {
         return abort_pending_sync(verbose);
     }
+    let current = git::current_branch()?;
+    if let Some(pending) = read_pending_sync()? {
+        return resume_sync(pending, &current, finish_work, verbose);
+    }
+    if finish_work {
+        return Err(GwError::Other(
+            "No interrupted work restoration to finish.".into(),
+        ));
+    }
     let working_dir = WorkingDirState::detect();
-    if !working_dir.is_clean() {
+    if !working_dir.is_clean() && !keep_work {
         output::error(&format!(
             "You have uncommitted changes ({}).",
             working_dir.description()
         ));
-        output::action("git add <files> && git commit -m \"...\"  # commit first");
-        output::action("gw pause                                  # or park the work as WIP");
+        output::action(
+            "gw sync --keep-work  # save local work, sync, then restore work and staging",
+        );
+        output::info("Only committed history is published; local work stays local.");
+        output::action("git add <files> && git commit -m \"...\"  # or commit when ready");
         return Err(GwError::UncommittedChanges);
     }
 
     // 2. Get current branch info
     let repo_type = RepoType::detect()?;
     let home_branch = repo_type.home_branch();
-    let current = git::current_branch()?;
-    if let Some(pending) = read_pending_sync()? {
-        return resume_sync(pending, &current, verbose);
-    }
 
     // On home branch - just sync with origin/main
     if current == home_branch {
@@ -104,10 +112,24 @@ pub fn run(abort: bool, verbose: bool) -> Result<()> {
         // Detect default remote branch and sync
         let default_remote = git::get_default_remote_branch()?;
         let default_branch = default_remote.strip_prefix("origin/").unwrap_or("main");
-        helpers::pull_with_output(&default_remote, default_branch, verbose)?;
-
-        output::ready("Ready", home_branch);
-        return Ok(());
+        if working_dir.is_clean() {
+            helpers::pull_with_output(&default_remote, default_branch, verbose)?;
+            output::ready("Ready", home_branch);
+            return Ok(());
+        }
+        return execute(
+            &Plan {
+                new_base: default_remote.clone(),
+                boundary: None,
+                retarget_pr: None,
+                unstack: false,
+                rerecord_base: false,
+            },
+            &current,
+            default_branch,
+            true,
+            verbose,
+        );
     }
 
     println!();
@@ -222,7 +244,7 @@ pub fn run(abort: bool, verbose: bool) -> Result<()> {
     };
 
     // 6. Carry it out.
-    execute(&plan, &current, default_branch, verbose)
+    execute(&plan, &current, default_branch, false, verbose)
 }
 
 /// For a PR that GitHub shows targeting the default branch: if `gw new --stack`
@@ -413,6 +435,25 @@ struct PendingSync {
     expected_remote: Option<String>,
     publication_finished: bool,
     plan: Plan,
+    #[serde(default)]
+    home: bool,
+    #[serde(default)]
+    aborting: bool,
+    #[serde(default)]
+    work: Option<SavedWork>,
+}
+
+/// The journal precedes stash creation; the unique message recovers a snapshot
+/// even if interrupted before its OID is recorded. A private ref pins it across
+/// worktrees and stash-list edits. Restoring is never automatically repeated.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedWork {
+    token: String,
+    oid: Option<String>,
+    #[serde(default)]
+    restoring: bool,
+    #[serde(default)]
+    restored: bool,
 }
 
 fn read_pending_sync() -> Result<Option<PendingSync>> {
@@ -438,7 +479,13 @@ fn save_pending_sync(pending: &PendingSync) -> Result<()> {
     Ok(())
 }
 
-fn execute(plan: &Plan, current: &str, default_branch: &str, verbose: bool) -> Result<()> {
+fn execute(
+    plan: &Plan,
+    current: &str,
+    default_branch: &str,
+    home: bool,
+    verbose: bool,
+) -> Result<()> {
     // Resolve mutable refs once so the rebase and recorded boundary agree even
     // if another tool fetches while this operation runs.
     if git::is_ancestor(&plan.new_base, "HEAD") {
@@ -447,16 +494,47 @@ fn execute(plan: &Plan, current: &str, default_branch: &str, verbose: bool) -> R
         output::info(&format!("Rebasing onto {}", plan.new_base));
     }
     let expected_remote = git::remote_branch_tip(current)?;
+    let head = git::head_commit()?;
+    let publish = !home && (git::has_remote_tracking(current) || expected_remote.is_some());
+    // A true no-op must not disturb partial staging or touch local files.
+    if git::is_ancestor(&plan.new_base, "HEAD")
+        && !plan.unstack
+        && !plan.rerecord_base
+        && plan.retarget_pr.is_none()
+        && (!publish || expected_remote.as_ref() == Some(&head))
+    {
+        output::ready("Synced", current);
+        return Ok(());
+    }
     let pending = PendingSync {
         branch: current.to_string(),
         worktree: git::worktree_root()?,
-        original_head: git::head_commit()?,
+        original_head: head,
         rebased_head: None,
         target_sha: git::rev_parse(&plan.new_base)?,
         default_branch: default_branch.to_string(),
-        publish: git::has_remote_tracking(current) || expected_remote.is_some(),
+        publish,
         expected_remote,
         publication_finished: false,
+        home,
+        aborting: false,
+        work: if WorkingDirState::detect().is_clean() {
+            None
+        } else {
+            Some(SavedWork {
+                token: format!(
+                    "gw-sync-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_err(|e| GwError::Other(e.to_string()))?
+                        .as_nanos()
+                ),
+                oid: None,
+                restoring: false,
+                restored: false,
+            })
+        },
         plan: Plan {
             new_base: plan.new_base.clone(),
             boundary: plan.boundary.clone(),
@@ -466,10 +544,15 @@ fn execute(plan: &Plan, current: &str, default_branch: &str, verbose: bool) -> R
         },
     };
     save_pending_sync(&pending)?;
-    resume_sync(pending, current, verbose)
+    resume_sync(pending, current, false, verbose)
 }
 
-fn resume_sync(mut pending: PendingSync, current: &str, verbose: bool) -> Result<()> {
+fn resume_sync(
+    mut pending: PendingSync,
+    current: &str,
+    finish_work: bool,
+    verbose: bool,
+) -> Result<()> {
     if pending.branch != current || pending.worktree != git::worktree_root()? {
         return Err(GwError::Other(format!(
             "Unfinished sync belongs to '{}' in {}. Finish/abort any rebase there, then rerun gw sync in that worktree.",
@@ -481,6 +564,29 @@ fn resume_sync(mut pending: PendingSync, current: &str, verbose: bool) -> Result
     if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
         return Err(GwError::Other("A rebase is still in progress. Resolve it with git rebase --continue (or --abort), then rerun gw sync.".into()));
     }
+    if finish_work && !pending.work.as_ref().is_some_and(|work| work.restoring) {
+        return Err(GwError::Other(
+            "Work restoration has not started; rerun gw sync without --finish-work.".into(),
+        ));
+    }
+    prepare_work(&mut pending, verbose)?;
+    if !pending.work.as_ref().is_some_and(|work| work.restoring)
+        && !WorkingDirState::detect().is_clean()
+    {
+        return Err(GwError::Other("New uncommitted changes appeared during sync. Preserve them before resuming; the original saved work is still protected.".into()));
+    }
+    if pending.aborting {
+        if git::head_commit()? != pending.original_head {
+            return Err(GwError::Other(
+                "Interrupted rollback: run gw sync --abort to restore the original head first."
+                    .into(),
+            ));
+        }
+        restore_work(&mut pending, finish_work, verbose)?;
+        std::fs::remove_file(git::lifecycle::sync_journal_path()?)?;
+        output::success("Sync aborted; local work restored.");
+        return Ok(());
+    }
     let head = git::head_commit()?;
     if let Some(expected) = &pending.rebased_head {
         if &head != expected {
@@ -489,9 +595,17 @@ fn resume_sync(mut pending: PendingSync, current: &str, verbose: bool) -> Result
     } else {
         if head == pending.original_head {
             if !git::is_ancestor(&pending.target_sha, "HEAD") {
-                let result = match &pending.plan.boundary {
-                    Some(boundary) => git::rebase_onto(&pending.target_sha, boundary, verbose),
-                    None => git::rebase(&pending.target_sha, verbose),
+                let result = if pending.home {
+                    git::git_run_in_dir(".", &["merge", "--ff-only", &pending.target_sha], verbose)
+                } else {
+                    match &pending.plan.boundary {
+                        Some(boundary) => git::rebase_onto(&pending.target_sha, boundary, verbose),
+                        None => git::git_run_in_dir(
+                            ".",
+                            &["rebase", "--no-autostash", &pending.target_sha],
+                            verbose,
+                        ),
+                    }
                 };
                 if let Err(e) = result {
                     output::warn(
@@ -534,9 +648,10 @@ fn resume_sync(mut pending: PendingSync, current: &str, verbose: bool) -> Result
     } else if pending.plan.rerecord_base {
         git::set_branch_base_sha(current, &pending.target_sha, verbose)?;
     }
+    restore_work(&mut pending, finish_work, verbose)?;
     std::fs::remove_file(git::lifecycle::sync_journal_path()?)?;
     output::ready("Synced", current);
-    if !pending.publish {
+    if !pending.publish && !pending.home {
         output::hints(&[&format!(
             "git push -u origin {current}  # Publish when ready"
         )]);
@@ -547,14 +662,20 @@ fn resume_sync(mut pending: PendingSync, current: &str, verbose: bool) -> Result
 
 /// Status must route recovery before deriving a fresh action from partial state.
 pub fn pending_recovery_hint() -> Result<Option<String>> {
-    Ok(read_pending_sync()?.map(|pending| format!(
+    Ok(read_pending_sync()?.map(|pending| {
+        if let Some(work) = &pending.work {
+            if work.restoring && !work.restored {
+                return format!("Sync on '{}' in {} reached work restoration. Saved work: refs/gw/sync-work/{}. Resolve/restore the files, then run gw sync --finish-work there. This is not an active rebase.", pending.branch, pending.worktree.display(), work.token);
+            }
+        }
+        format!(
         "Unfinished sync on '{}' in {}. Finish/abort any active rebase there, then run gw sync to resume (or gw sync --abort before publication).",
         pending.branch, pending.worktree.display()
-    )))
+    )}))
 }
 
 fn abort_pending_sync(verbose: bool) -> Result<()> {
-    let Some(pending) = read_pending_sync()? else {
+    let Some(mut pending) = read_pending_sync()? else {
         output::info("No pending sync to abort.");
         return Ok(());
     };
@@ -585,9 +706,147 @@ fn abort_pending_sync(verbose: bool) -> Result<()> {
         if pending.rebased_head.as_ref() != Some(&head) {
             return Err(GwError::Other("HEAD differs from the recorded sync checkpoints. Refusing rollback of unrelated work.".into()));
         }
+        pending.aborting = true;
+        save_pending_sync(&pending)?;
         git::git_run_in_dir(".", &["reset", "--keep", &pending.original_head], verbose)?;
     }
+    pending.aborting = true;
+    save_pending_sync(&pending)?;
+    prepare_work(&mut pending, verbose)?;
+    restore_work(&mut pending, false, verbose)?;
     std::fs::remove_file(git::lifecycle::sync_journal_path()?)?;
     output::success("Sync aborted; original head and dependency metadata preserved.");
+    Ok(())
+}
+
+/// Run snapshot commands with checked status. Do not infer successful reads from
+/// empty output (a failed stash query must never mean "no snapshot exists").
+fn work_git(args: &[&str]) -> Result<String> {
+    let result = std::process::Command::new("git")
+        .args(args)
+        .current_dir(git::worktree_root()?)
+        .output()?;
+    if !result.status.success() {
+        return Err(GwError::GitCommandFailed(
+            String::from_utf8_lossy(&result.stderr).trim().to_string(),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&result.stdout).trim().to_string())
+}
+
+fn prepare_work(pending: &mut PendingSync, verbose: bool) -> Result<()> {
+    let Some(work) = &pending.work else {
+        return Ok(());
+    };
+    // Restored snapshots may already have had their private ref removed.
+    if work.restored {
+        return Ok(());
+    }
+    let token = work.token.clone();
+    let reference = format!("refs/gw/sync-work/{token}");
+    if work.oid.is_none() {
+        let find_snapshot = || -> Result<Option<String>> {
+            Ok(work_git(&["stash", "list", "--format=%H%x09%gs"])?
+                .lines()
+                .find_map(|line| {
+                    let (oid, subject) = line.split_once('\t')?;
+                    subject
+                        .ends_with(&format!(": {token}"))
+                        .then(|| oid.to_string())
+                }))
+        };
+        let oid = match find_snapshot()? {
+            Some(oid) => oid,
+            None => {
+                if git::head_commit()? != pending.original_head
+                    || WorkingDirState::detect().is_clean()
+                {
+                    return Err(GwError::Other(format!(
+                        "Cannot locate saved work {token}; refusing to infer or overwrite it. Inspect git stash list and gw status."
+                    )));
+                }
+                output::info(
+                    "Saving staged, unstaged, and untracked work locally (ignored files excluded)...",
+                );
+                git::git_run_in_dir(
+                    ".",
+                    &["stash", "push", "--include-untracked", "--message", &token],
+                    verbose,
+                )?;
+                find_snapshot()?.ok_or_else(|| GwError::Other("Snapshot creation returned without a recoverable stash entry. Stop and inspect git stash list.".into()))?
+            }
+        };
+        // Keep the stash entry until both the private ref and journal are durable.
+        git::git_run_in_dir(".", &["update-ref", &reference, &oid], verbose)?;
+        pending.work.as_mut().unwrap().oid = Some(oid);
+        save_pending_sync(pending)?;
+    }
+    let oid = pending.work.as_ref().unwrap().oid.as_ref().unwrap();
+    if work_git(&["rev-parse", "--verify", &reference])? != *oid {
+        return Err(GwError::Other(
+            "Saved work reference changed; refusing to restore a different snapshot.".into(),
+        ));
+    }
+    // Only remove our own entry, by OID and unique message, never stash@{0}.
+    let entries = work_git(&["stash", "list", "--format=%gd%x09%H%x09%gs"])?;
+    for line in entries.lines() {
+        let parts: Vec<_> = line.splitn(3, '\t').collect();
+        if parts.len() == 3 && parts[1] == oid && parts[2].ends_with(&format!(": {token}")) {
+            git::git_run_in_dir(".", &["stash", "drop", parts[0]], verbose)?;
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn restore_work(pending: &mut PendingSync, finish_work: bool, verbose: bool) -> Result<()> {
+    let Some(work) = &pending.work else {
+        return Ok(());
+    };
+    let reference = format!("refs/gw/sync-work/{}", work.token);
+    if !work.restored {
+        if work.restoring {
+            if !finish_work {
+                return Err(GwError::Other(format!(
+                    "Sync reached local work restoration. Backup: {reference}. Resolve/restore your files, then run gw sync --finish-work. Do not run git rebase --continue for a restoration conflict."
+                )));
+            }
+            if !work_git(&["ls-files", "--unmerged"])?.is_empty() {
+                return Err(GwError::Other("Unresolved files remain. Resolve them and git add <files>, then run gw sync --finish-work.".into()));
+            }
+        } else {
+            pending.work.as_mut().unwrap().restoring = true;
+            save_pending_sync(pending)?;
+            output::info("Restoring local work and staging...");
+            if let Err(error) =
+                git::git_run_in_dir(".", &["stash", "apply", "--index", &reference], verbose)
+            {
+                return Err(GwError::Other(format!(
+                    "Committed-history operation finished, but local work restoration failed: {error}\nBackup retained: {reference}\nInspect with git stash show -p --include-untracked {reference}. Resolve/restore the files, then run gw sync --finish-work. This is not a rebase conflict."
+                )));
+            }
+        }
+        pending.work.as_mut().unwrap().restored = true;
+        save_pending_sync(pending)?;
+    }
+    // A crash here is harmless: a restored journal skips application on retry.
+    let remaining = work_git(&["for-each-ref", "--format=%(objectname)", &reference])?;
+    if !remaining.is_empty() {
+        git::git_run_in_dir(
+            ".",
+            &[
+                "update-ref",
+                "-d",
+                &reference,
+                pending.work.as_ref().unwrap().oid.as_deref().unwrap(),
+            ],
+            verbose,
+        )?;
+    }
+    output::success(if finish_work {
+        "Manual work restoration acknowledged"
+    } else {
+        "Local work and staging restored"
+    });
     Ok(())
 }

@@ -29,7 +29,7 @@ pub enum GwError {
     #[error("Cannot delete protected branch: {0}")]
     ProtectedBranch(String),
 
-    #[error("Uncommitted changes detected. Commit or stash them first.")]
+    #[error("Uncommitted changes detected. Commit them or preserve your work before continuing.")]
     UncommittedChanges,
 
     #[error("Branch '{0}' has {1} unpushed commit(s)")]

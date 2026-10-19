@@ -227,8 +227,9 @@ handles worktree boundaries for you. Because of them:
 
 - **Don't `git checkout main`** — use `gw home` (switches to home + syncs with
   `origin/main`). A direct checkout conflicts across worktrees.
-- **Don't `git stash`** — use `gw pause` (a WIP commit travels across worktrees
-  safely; a stash doesn't).
+- **Don't manually `git stash`** — use `gw sync --keep-work` when syncing
+  unfinished work; gw owns the local snapshot and recovery. Use `gw pause`
+  when switching tasks; its WIP commit stays with the branch.
 - **Don't hand-rebase** — `gw sync` brings a branch onto its latest base (`main` or the stacked parent) and restacks after the parent merges.
 - **Don't push to `main`** — every change goes through a PR.
 - **Don't create worktrees outside `gw`** — no `git worktree add`, no agent
@@ -254,3 +255,17 @@ Examples: `feat: add gw await command` · `fix: handle detached HEAD in status` 
   configured via env in your dotfiles, not the CLI:
   - `GW_OPEN_URL_CMD` → script that opens a URL (e.g. a dedicated Chrome profile)
   - `GW_NOTIFY_CMD` → script that shows a notification (e.g. macOS `osascript`)
+
+## Sync with unfinished work
+
+Use `gw sync --keep-work` to preserve staged, unstaged, and untracked changes
+while syncing committed history. Ignored files are excluded; unfinished work
+is never pushed. On rebase conflicts, finish `git rebase --continue`, then rerun
+`gw sync`; before publication you may instead abort the rebase and run
+`gw sync --abort` to restore the original history and saved work.
+
+Restoration conflicts are different: the rebase already finished. Keep the
+printed `refs/gw/sync-work/...` backup, resolve/restore the files, then run
+`gw sync --finish-work` to acknowledge restoration and remove the backup.
+Never run `rebase --continue` for a work-restoration conflict. An interrupted
+restoration also requires manual acknowledgment so changes are not applied twice.
