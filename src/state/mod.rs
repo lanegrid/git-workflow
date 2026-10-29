@@ -1,10 +1,12 @@
 //! State types for gw CLI
 
+pub mod flow;
 pub mod next_action;
 pub mod repo;
 pub mod sync;
 pub mod working_dir;
 
+pub use flow::Flow;
 pub use next_action::{DetectContext, NextAction};
 pub use repo::RepoType;
 pub use sync::SyncState;

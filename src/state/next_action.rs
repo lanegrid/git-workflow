@@ -5,13 +5,17 @@
 use crate::github::PrInfo;
 use crate::output;
 
-use super::{SyncState, WorkingDirState};
+use super::{Flow, SyncState, WorkingDirState};
 
 /// Recommended next action based on current state
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NextAction {
     /// On home branch, ready to start new work
     StartNewWork,
+    /// On the default branch of a `trunk`-flow repo with nothing to commit,
+    /// pull or push: edit and commit here directly. `has_remote` is false for
+    /// a repo with nowhere to push.
+    TrunkReady { has_remote: bool },
     /// On home branch but behind upstream, should sync first
     SyncHomeWithUpstream { behind_count: usize },
     /// Has uncommitted changes, should commit
@@ -72,6 +76,12 @@ pub struct DetectContext<'a> {
     pub base_ref: &'a str,
     /// Commits on `base_ref` that this branch does not have.
     pub behind_base: usize,
+    /// How changes reach the default branch (`gw.flow`).
+    pub flow: Flow,
+    /// The repository's default branch (main/master). Under the trunk flow,
+    /// only this branch is committed to directly — a worktree's home branch
+    /// is a parking spot, not the trunk.
+    pub default_branch: &'a str,
 }
 
 impl NextAction {
@@ -95,6 +105,21 @@ impl NextAction {
             if let SyncState::Behind { count } = sync_state {
                 return NextAction::SyncHomeWithUpstream {
                     behind_count: *count,
+                };
+            }
+            // Trunk flow: work is committed and pushed on the default branch.
+            // A diverged trunk takes the remote's commits first — never
+            // suggest a force push here.
+            if ctx.flow == Flow::Trunk && home_branch == ctx.default_branch {
+                if !matches!(working_dir, WorkingDirState::Clean) {
+                    return NextAction::CommitChanges;
+                }
+                return match sync_state {
+                    SyncState::Diverged { behind, .. } => NextAction::PullUpstream {
+                        behind_count: *behind,
+                    },
+                    SyncState::HasUnpushedCommits { .. } => NextAction::PushChanges,
+                    _ => NextAction::TrunkReady { has_remote },
                 };
             }
             return NextAction::StartNewWork;
@@ -201,6 +226,22 @@ impl NextAction {
                 output::action("Next: start new work");
                 println!();
                 println!("  gw new feature/your-feature");
+            }
+            NextAction::TrunkReady { has_remote } => {
+                output::action(&format!("Next: commit on {} (trunk flow)", branch));
+                println!();
+                if *has_remote {
+                    println!(
+                        "  git add <files> && git commit -m \"feat: ...\" && git push  # stage deliberately, not -A"
+                    );
+                } else {
+                    println!(
+                        "  git add <files> && git commit -m \"feat: ...\"  # stage deliberately, not -A"
+                    );
+                }
+                println!(
+                    "  gw new feature/your-feature  # when this change should go through a PR"
+                );
             }
             NextAction::SyncHomeWithUpstream { behind_count } => {
                 output::action(&format!(
@@ -317,6 +358,7 @@ impl NextAction {
     pub fn short_description(&self) -> &'static str {
         match self {
             NextAction::StartNewWork => "start new work",
+            NextAction::TrunkReady { .. } => "commit on trunk",
             NextAction::SyncHomeWithUpstream { .. } => "sync with upstream",
             NextAction::CommitChanges => "commit changes",
             NextAction::PushChanges => "push to remote",
@@ -361,6 +403,8 @@ mod tests {
             recorded_base_sha: None,
             base_ref: "origin/main",
             behind_base: 0,
+            flow: Flow::Pr,
+            default_branch: "main",
         }
     }
 
@@ -761,5 +805,127 @@ mod tests {
                 base_branch: "feature/base".to_string()
             }
         );
+    }
+
+    /// `ctx` for the trunk flow on the default branch `main`.
+    fn trunk_home<'a>(
+        working_dir: &'a WorkingDirState,
+        sync_state: &'a SyncState,
+        has_remote: bool,
+    ) -> DetectContext<'a> {
+        DetectContext {
+            flow: Flow::Trunk,
+            ..ctx("main", "main", working_dir, sync_state, None, has_remote)
+        }
+    }
+
+    #[test]
+    fn test_trunk_clean_synced_suggests_commit_on_trunk() {
+        let action = NextAction::detect(&trunk_home(
+            &WorkingDirState::Clean,
+            &SyncState::Synced,
+            true,
+        ));
+        assert_eq!(action, NextAction::TrunkReady { has_remote: true });
+    }
+
+    #[test]
+    fn test_trunk_without_remote_suggests_commit_without_push() {
+        let action = NextAction::detect(&trunk_home(
+            &WorkingDirState::Clean,
+            &SyncState::NoUpstream,
+            false,
+        ));
+        assert_eq!(action, NextAction::TrunkReady { has_remote: false });
+    }
+
+    #[test]
+    fn test_trunk_uncommitted_changes_suggests_commit() {
+        let action = NextAction::detect(&trunk_home(
+            &WorkingDirState::HasUnstagedChanges,
+            &SyncState::Synced,
+            true,
+        ));
+        assert_eq!(action, NextAction::CommitChanges);
+    }
+
+    #[test]
+    fn test_trunk_unpushed_commits_suggests_push() {
+        let action = NextAction::detect(&trunk_home(
+            &WorkingDirState::Clean,
+            &SyncState::HasUnpushedCommits { count: 2 },
+            true,
+        ));
+        assert_eq!(action, NextAction::PushChanges);
+    }
+
+    #[test]
+    fn test_trunk_diverged_suggests_pull_not_force_push() {
+        let action = NextAction::detect(&trunk_home(
+            &WorkingDirState::Clean,
+            &SyncState::Diverged {
+                ahead: 1,
+                behind: 3,
+            },
+            true,
+        ));
+        assert_eq!(action, NextAction::PullUpstream { behind_count: 3 });
+    }
+
+    #[test]
+    fn test_trunk_behind_suggests_sync() {
+        let action = NextAction::detect(&trunk_home(
+            &WorkingDirState::HasUnstagedChanges,
+            &SyncState::Behind { count: 4 },
+            true,
+        ));
+        assert_eq!(action, NextAction::SyncHomeWithUpstream { behind_count: 4 });
+    }
+
+    #[test]
+    fn test_trunk_worktree_home_is_not_the_trunk() {
+        // A pool worktree's home branch is a parking spot: even under the trunk
+        // flow, work there starts a branch rather than committing in place.
+        let action = NextAction::detect(&DetectContext {
+            flow: Flow::Trunk,
+            ..ctx(
+                "pool-001",
+                "pool-001",
+                &WorkingDirState::HasUnstagedChanges,
+                &SyncState::Synced,
+                None,
+                true,
+            )
+        });
+        assert_eq!(action, NextAction::StartNewWork);
+    }
+
+    #[test]
+    fn test_trunk_feature_branch_follows_pr_flow() {
+        let action = NextAction::detect(&DetectContext {
+            flow: Flow::Trunk,
+            ..ctx(
+                "feature/test",
+                "main",
+                &WorkingDirState::Clean,
+                &SyncState::Synced,
+                None,
+                true,
+            )
+        });
+        assert_eq!(action, NextAction::CreatePr { base: None });
+    }
+
+    #[test]
+    fn test_pr_flow_home_with_changes_still_starts_new_work() {
+        let action = NextAction::detect(&ctx(
+            "main",
+            "main",
+            &WorkingDirState::HasUnstagedChanges,
+            &SyncState::Synced,
+            None,
+            true,
+        ));
+        assert_eq!(action, NextAction::StartNewWork);
     }
 }

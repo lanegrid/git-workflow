@@ -4,7 +4,7 @@ use crate::error::{GwError, Result};
 use crate::git;
 use crate::github::{self, PrInfo, PrState};
 use crate::output;
-use crate::state::{DetectContext, NextAction, RepoType, SyncState, WorkingDirState};
+use crate::state::{DetectContext, Flow, NextAction, RepoType, SyncState, WorkingDirState};
 
 /// Execute the `status` command
 pub fn run() -> Result<()> {
@@ -24,6 +24,8 @@ pub fn run() -> Result<()> {
     let _ = git::fetch_prune(false);
 
     let repo_type = RepoType::detect()?;
+    let configured_flow = Flow::configured()?;
+    let flow = configured_flow.unwrap_or_default();
     let home_branch = repo_type.home_branch();
     let current = git::current_branch()?;
     let working_dir = WorkingDirState::detect();
@@ -45,6 +47,14 @@ pub fn run() -> Result<()> {
             ));
         }
     }
+
+    // Flow (`gw.flow`): how changes reach the default branch
+    let flow_source = if configured_flow.is_some() {
+        "gw.flow"
+    } else {
+        "default"
+    };
+    output::info(&format!("Flow: {} ({})", flow.as_str(), flow_source));
 
     // Current branch
     if current == home_branch {
@@ -179,6 +189,8 @@ pub fn run() -> Result<()> {
         recorded_base_sha: recorded_base_sha.as_deref(),
         base_ref: &base_ref,
         behind_base,
+        flow,
+        default_branch: &default_branch,
     });
     next_action.display(&current, !working_dir.is_clean());
     if !working_dir.is_clean()

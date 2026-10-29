@@ -145,6 +145,30 @@ set -gx GW_NOTIFY_CMD "$HOME/dotfiles/scripts/notify.sh"
 
 If `GW_NOTIFY_CMD` is unset, the notification step is simply skipped.
 
+### Choosing a flow: PR or trunk
+
+`gw.flow` in git config says how changes reach the default branch, and
+`gw status` shows it (`Flow: pr (default)` or `Flow: trunk (gw.flow)`):
+
+| `gw.flow` | On the default branch, `gw status` suggests |
+|-----------|---------------------------------------------|
+| `pr` (default, also when unset) | `gw new <branch>`. Every change goes through a feature branch and a PR |
+| `trunk` | commit → `git push` right there; `git pull --rebase` when diverged (never a force push) |
+
+Feature branches behave the same under both flows, so a trunk repo can still
+open a PR with `gw new` for a change that wants review. A worktree's home branch
+is never treated as the trunk.
+
+It is plain git config, so any scope works:
+
+```bash
+git config gw.flow trunk                 # this repository only
+
+# ~/.gitconfig: every repository under a directory
+[includeIf "gitdir:~/dotfiles/"]
+  path = ~/.gitconfig.trunk              # a file containing: [gw] flow = trunk
+```
+
 ### Safety Features
 
 - **Auto-fetch**: `new`, `status`, `sync`, `home`, `pause`, `abandon`, `cleanup` fetch from origin first

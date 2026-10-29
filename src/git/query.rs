@@ -107,6 +107,15 @@ pub fn branch_base(branch: &str) -> Option<String> {
     if value.is_empty() { None } else { Some(value) }
 }
 
+/// Read the repository's flow setting (`gw.flow`) from any git config scope.
+///
+/// Returns `None` when unset (the caller defaults to the PR flow). It is a
+/// local config read — no network.
+pub fn gw_flow() -> Option<String> {
+    let value = git_output(&["config", "--get", "gw.flow"]).ok()?;
+    if value.is_empty() { None } else { Some(value) }
+}
+
 /// Read the recorded base tip SHA for a branch (`branch.<name>.gwBaseSha`).
 ///
 /// Recorded by `gw new --stack` as the parent's HEAD at stack time. Serves as a

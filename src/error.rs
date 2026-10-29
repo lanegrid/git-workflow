@@ -41,6 +41,9 @@ pub enum GwError {
     #[error("Branch name is required")]
     BranchNameRequired,
 
+    #[error("Invalid gw.flow value '{0}' (expected 'pr' or 'trunk')")]
+    InvalidFlow(String),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
