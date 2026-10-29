@@ -60,16 +60,12 @@ Use `git-workflow` commands for git operations:
 
 ### Agent skills
 
-`skills/` holds two [Agent Skills](https://code.claude.com/docs/en/skills) that teach an agent this workflow:
+`skills/git-workflow` is an [Agent Skill](https://code.claude.com/docs/en/skills) that teaches an agent this workflow: reading `gw status`, the pr and trunk flows, stacked PRs, `gw await`, and worktree pools for parallel agents.
 
-- `git-workflow` — the gw workflow itself: reading `gw status`, the pr and trunk flows, stacked PRs, `gw await`, worktree pools
-- `team-spawn` — delegating to subagents: how long an agent lives, brief files, owner vs handed roles, pool isolation
-
-Link them into your user-level skills directory (Claude Code reads `~/.claude/skills`, Codex `~/.agents/skills`):
+Link it into your user-level skills directory (Claude Code reads `~/.claude/skills`, Codex `~/.agents/skills`):
 
 ```bash
 ln -s "$PWD/skills/git-workflow" ~/.claude/skills/git-workflow
-ln -s "$PWD/skills/team-spawn"   ~/.claude/skills/team-spawn
 ```
 
 ## Quick Start

@@ -187,6 +187,8 @@ gw worktree pool drain                     # remove all pool worktrees
   (release only clears the acquire marker).
 - **gw owns worktrees**: no `git worktree add`, no agent `isolation: worktree` —
   `gw cleanup` can't reconcile worktrees it didn't create.
+- **One writer per file set**: if several agents must touch the same files,
+  partition the files per agent or run them one after another.
 
 ## Worktree model & hard "don'ts"
 
