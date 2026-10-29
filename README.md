@@ -58,7 +58,19 @@ Use `git-workflow` commands for git operations:
 - `git-workflow await` - Watch the PR to completion (CI → merge), then clean up
 ```
 
-Or use the `/git-workflow` skill if configured.
+### Agent skills
+
+`skills/` holds two [Agent Skills](https://code.claude.com/docs/en/skills) that teach an agent this workflow:
+
+- `git-workflow` — the gw workflow itself: reading `gw status`, the pr and trunk flows, stacked PRs, `gw await`, worktree pools
+- `team-spawn` — delegating to subagents: how long an agent lives, brief files, owner vs handed roles, pool isolation
+
+Link them into your user-level skills directory (Claude Code reads `~/.claude/skills`, Codex `~/.agents/skills`):
+
+```bash
+ln -s "$PWD/skills/git-workflow" ~/.claude/skills/git-workflow
+ln -s "$PWD/skills/team-spawn"   ~/.claude/skills/team-spawn
+```
 
 ## Quick Start
 
