@@ -4,10 +4,11 @@ A type-safe Git workflow CLI (`gw`) with worktree support and GitHub integration
 
 ## Rules
 
-- **Load the `git-workflow` skill before your first tool call.** Always — even for read-only or docs work.
-- **Any file change ships as a PR.** Feature branch → `mise run verify` → PR. Never push to `main`.
+- **Any file change ships as a PR** (this repo uses the default `gw.flow`, `pr`): feature branch → `mise run verify` → PR.
 
-The skill is the single source of truth for the `gw` workflow; don't duplicate it here.
+The agent skills this repo ships live in `skills/` (`git-workflow`, `team-spawn`) and
+are the single source of truth for the `gw` workflow; don't duplicate them here.
+`.claude/skills/` holds only this repo's own skill (`release`).
 
 ## Development
 
